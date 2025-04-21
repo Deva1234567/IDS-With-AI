@@ -1,0 +1,2 @@
+ip.len,ip.proto,tcp.srcport,tcp.dstport,udp.srcport,udp.dstport,tcp.window_size,ip.ttl
+0.0,0,0.0,0.0,0.0,0.0,0.0,0.0
