@@ -6,6 +6,7 @@ import sys
 import time
 from datetime import datetime
 import folium
+from folium.plugins import HeatMap
 import json
 import socket
 import io
@@ -24,7 +25,7 @@ import streamlit.components.v1 as components
 import geoip2.database
 import ipaddress
 import matplotlib.pyplot as plt
-import random  # Added import for random module
+import random
 
 # Add project root to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -55,6 +56,20 @@ logger.info("App started on VS Code in Windows with JDK 21")
 
 # Path to GeoLite2 database
 GEOIP_DB_PATH = r"C:\Users\devan\Desktop\Project\IDS project\data\GeoLite2-Country.mmdb"
+
+# MITRE ATT&CK Mapping
+MITRE_ATTACK_MAPPING = {
+    "DDoS": {"technique": "T1498", "tactic": "Impact", "name": "Network Denial of Service"},
+    "XSS": {"technique": "T1189", "tactic": "Initial Access", "name": "Drive-by Compromise"},
+    "SQLi": {"technique": "T1190", "tactic": "Initial Access", "name": "Exploit Public-Facing Application"},
+    "Ransomware": {"technique": "T1486", "tactic": "Impact", "name": "Data Encrypted for Impact"},
+    "Malware": {"technique": "T1204", "tactic": "Execution", "name": "User Execution"},
+    "Port Scan": {"technique": "T1046", "tactic": "Discovery", "name": "Network Service Scanning"},
+    "VirusTotal": {"technique": "T1590", "tactic": "Reconnaissance", "name": "Gather Victim Network Information"}
+}
+
+def get_mitre_mapping(threat):
+    return MITRE_ATTACK_MAPPING.get(threat, {"technique": "N/A", "tactic": "N/A", "name": "Not Mapped"})
 
 def check_java_version():
     try:
@@ -965,11 +980,13 @@ def get_available_interfaces():
         return ["Wi-Fi"]
 
 def render_threat_map():
-    m = folium.Map(location=[0, 0], zoom_start=2, tiles="CartoDB Dark_Matter", width=700, height=600)
+    m = folium.Map(location=[0, 0], zoom_start=0.5, tiles="CartoDB Dark_Matter", width=700, height=600)
 
-    # Add markers for all threat locations, allowing multiple per country
+    # Prepare data for heatmap and markers
     valid_markers = 0
     bounds = []
+    heatmap_data = []
+    country_summary = []
     if st.session_state.threat_locations:
         country_entries = {}
         for entry in st.session_state.threat_locations:
@@ -980,17 +997,44 @@ def render_threat_map():
                 country_entries[country].append(entry)
                 lat, lon = geocode_country(country)
                 bounds.append([lat, lon])
+                # Add to heatmap: [lat, lon, intensity] where intensity is based on threat score
+                try:
+                    intensity = float(entry["threat_score"].split("/")[0]) / 100
+                except (ValueError, AttributeError):
+                    intensity = 0.1  # Default intensity if score parsing fails
+                heatmap_data.append([lat, lon, intensity])
                 valid_markers += 1
                 logger.debug(f"Processing entry for {country} at ({lat}, {lon})")
 
+        # Add Heatmap layer
+        if heatmap_data:
+            HeatMap(heatmap_data, radius=15, blur=10, max_zoom=1).add_to(m)
+            logger.debug("Added heatmap layer to map")
+
+        # Add markers with popups and prepare summary for countries with multiple domains
         for country, entries in country_entries.items():
             lat, lon = geocode_country(country)
             # Build popup content for all entries in this country
             popup_content = f"Country: {country}<br>"
+            total_score = 0
             for entry in entries:
                 vt_summary = entry["vt_result"][:100] + "..." if len(entry["vt_result"]) > 100 else entry["vt_result"]
                 flaws_summary = entry["flaws"][:100] + "..." if len(entry["flaws"]) > 100 else entry["flaws"]
-                popup_content += f"Domain: {entry['domain']}<br>IP: {entry['ip']}<br>Threat: {entry['threat']}<br>Score: {entry['threat_score']}/100<br>VirusTotal: {vt_summary}<br>Flaws: {flaws_summary}<br><br>"
+                mitre = get_mitre_mapping(entry["threat"])
+                try:
+                    score = float(entry["threat_score"].split("/")[0])
+                except (ValueError, AttributeError):
+                    score = 0
+                total_score += score
+                popup_content += (
+                    f"Domain: {entry['domain']}<br>"
+                    f"IP: {entry['ip']}<br>"
+                    f"Threat: {entry['threat']}<br>"
+                    f"MITRE ATT&CK: {mitre['technique']} - {mitre['name']} ({mitre['tactic']})<br>"
+                    f"Score: {entry['threat_score']}/100<br>"
+                    f"VirusTotal: {vt_summary}<br>"
+                    f"Flaws: {flaws_summary}<br><br>"
+                )
 
             folium.Marker(
                 location=[lat, lon],
@@ -998,6 +1042,26 @@ def render_threat_map():
                 icon=folium.Icon(color="red" if any(e["threat"] != "Analyzed" for e in entries) else "green", icon="info-sign")
             ).add_to(m)
             logger.debug(f"Added marker for {country} with {len(entries)} entries")
+
+            # Prepare summary for countries with 2+ domains
+            if len(entries) >= 2:
+                domains_summary = []
+                for entry in entries:
+                    mitre = get_mitre_mapping(entry["threat"])
+                    domains_summary.append({
+                        "Domain": entry["domain"],
+                        "IP": entry["ip"],
+                        "Threat": entry["threat"],
+                        "MITRE ATT&CK": f"{mitre['technique']} - {mitre['name']} ({mitre['tactic']})",
+                        "Threat Score": entry["threat_score"]
+                    })
+                country_summary.append({
+                    "Country": country,
+                    "Domain Count": len(entries),
+                    "Total Threat Score": f"{total_score:.1f}",
+                    "Details": domains_summary
+                })
+
     else:
         logger.info("No threat locations to display on map")
 
@@ -1006,8 +1070,8 @@ def render_threat_map():
         m.fit_bounds(bounds)
     else:
         m.location = [20, 0]  # Central default location
-        m.zoom_start = 2     # Ensure zoomed out view
-        logger.info("Using default zoom level 2 due to single or no markers")
+        m.zoom_start = 1     # Ensure zoomed out view
+        logger.info("Using default zoom level 1 due to single or no markers")
 
     # Enhanced threat count chart
     with st.expander("Threat Statistics", expanded=True):
@@ -1031,6 +1095,15 @@ def render_threat_map():
             st.pyplot(fig)
         st.markdown('</div>', unsafe_allow_html=True)
 
+    # Display summary table for countries with 2+ domains
+    if country_summary:
+        with st.expander("Countries with Multiple Domains", expanded=True):
+            for summary in country_summary:
+                st.subheader(f"{summary['Country']} ({summary['Domain Count']} Domains)")
+                st.write(f"**Total Threat Score:** {summary['Total Threat Score']}")
+                df = pd.DataFrame(summary["Details"])
+                st.table(df)
+
     with st.expander("Debug: Threat Locations"):
         if st.session_state.threat_locations:
             st.write(pd.DataFrame(st.session_state.threat_locations))
@@ -1038,7 +1111,7 @@ def render_threat_map():
             st.write("No threat locations recorded. Analyze a domain to populate.")
 
     st_folium(m, width=700, height=600, returned_objects=[])
-    st.caption(f"Displaying {valid_markers} markers")
+    st.caption(f"Displaying {valid_markers} markers with heatmap")
 
 # Mode-specific content
 if st.session_state.mode == "Domain Analysis":
