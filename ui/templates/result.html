@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Prediction Results</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/bootstrap.min.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>Prediction Results</h1>
+        <ul>
+            {% for pred in predictions %}
+                <li>{{ 'Attack' if pred == 1 else 'Benign' }}</li>
+            {% endfor %}
+        </ul>
+        <a href="/" class="btn btn-secondary">Back</a>
+    </div>
+</body>
+</html><!DOCTYPE html>
+<html>
+<head>
+    <title>Prediction Results</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/bootstrap.min.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>Prediction Results</h1>
+        <ul>
+            {% for pred in predictions %}
+                <li>{{ 'Attack' if pred == 1 else 'Benign' }}</li>
+            {% endfor %}
+        </ul>
+        <a href="/" class="btn btn-secondary">Back</a>
+    </div>
+</body>
+</html>

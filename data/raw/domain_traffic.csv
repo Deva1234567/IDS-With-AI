@@ -1,0 +1,2 @@
+ip.src,ip.dst,ip.len,ip.proto,tcp.srcport,tcp.dstport,udp.srcport,udp.dstport,tcp.window_size,ip.ttl,timestamp
+192.168.1.42,142.250.194.142,198,6,80,443,0,0,64240,128,2025-04-17 13:29:22
