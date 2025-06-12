@@ -1,58 +1,58 @@
+import sys
+import os
+import logging
+from logging.handlers import RotatingFileHandler
 import streamlit as st
 import pandas as pd
-import logging
-import os
-import sys
-import time
-from datetime import datetime
+import plotly.express as px
+import plotly.graph_objects as go
 import folium
 from folium.plugins import HeatMap
-import json
+from streamlit_folium import st_folium
 import socket
 import io
+from datetime import datetime
+import pytz
+from dateutil.parser import parse
+import ipaddress
+import geoip2.database
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
-import ssl
-import dns.resolver
-import subprocess
-from scapy.all import sniff, wrpcap, rdpcap, get_working_ifaces
-from scapy.layers.inet import IP, TCP, UDP
-from streamlit_folium import st_folium
-from logging.handlers import RotatingFileHandler
-import streamlit.components.v1 as components
-import geoip2.database
-import ipaddress
-import matplotlib.pyplot as plt
-import pytz
-from dateutil.parser import parse
+from scapy.all import sniff, wrpcap, rdpcap, get_working_ifaces, IP, Raw
+import nmap
+from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(project_root)
 
-log_dir = os.path.join(r"C:\Users\devan\Desktop\Project\IDS project\logs")
+logger = logging.getLogger("streamlit_app")
+logger.setLevel(logging.DEBUG)
+log_dir = r"C:\Users\devan\Desktop\Project\IDS project\logs"
 os.makedirs(log_dir, exist_ok=True)
 log_file = os.path.join(log_dir, "streamlit.log")
-logger = logging.getLogger("app")
-logger.setLevel(logging.DEBUG)
-if not logger.handlers:
-    handler = RotatingFileHandler(log_file, maxBytes=1_000_000, backupCount=5)
-    handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
-    logger.addHandler(handler)
+handler = RotatingFileHandler(log_file, maxBytes=1_000_000, backupCount=5)
+handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+logger.addHandler(handler)
 logger.info("App started on VS Code in Windows with JDK 21")
 
-try:
-    from scripts.utils import whois_lookup, nmap_scan, virustotal_lookup, check_flaws
-    from scripts.predict import predict_threat
-    from scripts.config import VIRUSTOTAL_API_KEY, GEOIP_API_URL, THREAT_INTEL_IPS, EMAIL_CONFIG
-except ImportError as e:
-    logger.error(f"Failed to import scripts module: {str(e)}")
-    st.error(f"Failed to import scripts module: {str(e)}. Ensure 'scripts' directory exists with config.py, predict.py, and utils.py.")
-    raise
+st.set_page_config(
+    page_title="NetSec AI",
+    page_icon="🛡️",
+    layout="wide",
+    initial_sidebar_state="auto"
+)
 
-os.environ["JAVA_HOME"] = r"C:\Program Files\Java\jdk-21"
-JAVA_HOME = os.environ["JAVA_HOME"]
+try:
+    from scripts.config import VIRUSTOTAL_API_KEY, THREAT_INTEL_IPS, EMAIL_CONFIG
+    from scripts.utils import parallel_domain_analysis, capture_and_analyze_packets, analyze_packets, check_flaws
+    from scripts.predict import predict_threat
+except ImportError as e:
+    logger.error(f"Failed to import scripts modules: {str(e)}")
+    st.error(f"Failed to import scripts modules: {str(e)}. Ensure 'scripts' directory exists with config.py, predict.py, and utils.py.")
+    st.stop()
 
 GEOIP_DB_PATH = r"C:\Users\devan\Desktop\Project\IDS project\data\GeoLite2-Country.mmdb"
 
@@ -62,6 +62,7 @@ MITRE_ATTACK_MAPPING = {
     "SQLi": {"technique": "T1190", "tactic": "Initial Access", "name": "Exploit Public-Facing Application"},
     "Ransomware": {"technique": "T1486", "tactic": "Impact", "name": "Data Encrypted for Impact"},
     "Malware": {"technique": "T1204", "tactic": "Execution", "name": "User Execution"},
+    "Suspicious": {"technique": "T1204", "tactic": "Execution", "name": "Potential Threat"},
     "Port Scan": {"technique": "T1046", "tactic": "Discovery", "name": "Network Service Scanning"},
     "VirusTotal": {"technique": "T1590", "tactic": "Reconnaissance", "name": "Gather Victim Network Information"}
 }
@@ -70,233 +71,25 @@ FALLBACK_COORDINATES = {
     "Afghanistan": (33.9391, 67.7100),
     "Albania": (41.1533, 20.1683),
     "Algeria": (28.0339, 1.6596),
-    "Andorra": (42.5063, 1.5218),
-    "Angola": (-11.2027, 17.8739),
-    "Antigua and Barbuda": (17.0608, -61.7964),
     "Argentina": (-38.4161, -63.6167),
-    "Armenia": (40.0691, 45.0382),
     "Australia": (-25.2744, 133.7751),
-    "Austria": (47.5162, 14.5501),
-    "Azerbaijan": (40.1431, 47.5769),
-    "Bahamas": (25.0343, -77.3963),
-    "Bahrain": (26.0667, 50.5577),
-    "Bangladesh": (23.6850, 90.3563),
-    "Barbados": (13.1939, -59.5432),
-    "Belarus": (53.7098, 27.9534),
-    "Belgium": (50.5039, 4.4699),
-    "Belize": (17.1899, -88.4976),
-    "Benin": (9.3077, 2.3158),
-    "Bhutan": (27.5142, 90.4336),
-    "Bolivia": (-16.2902, -63.5887),
-    "Bosnia and Herzegovina": (43.9159, 17.6791),
-    "Botswana": (-22.3285, 24.6849),
     "Brazil": (-14.2350, -51.9253),
-    "Brunei": (4.5353, 114.7277),
-    "Bulgaria": (42.7339, 25.4858),
-    "Burkina Faso": (12.2383, -1.5616),
-    "Burundi": (-3.3731, 29.9189),
-    "Cabo Verde": (16.0021, -24.0132),
-    "Cambodia": (12.5657, 104.9910),
-    "Cameroon": (5.3690, 11.5137),
     "Canada": (56.1304, -106.3468),
-    "Central African Republic": (6.6111, 20.9394),
-    "Chad": (15.4542, 18.7322),
-    "Chile": (-35.6751, -71.5430),
     "China": (35.8617, 104.1954),
-    "Colombia": (4.5709, -74.2973),
-    "Comoros": (-11.6455, 43.3333),
-    "Congo (Congo-Brazzaville)": (-0.2280, 15.8277),
-    "Costa Rica": (9.7489, -83.7534),
-    "Croatia": (45.1000, 15.2000),
-    "Cuba": (21.5218, -77.7812),
-    "Cyprus": (35.1264, 33.4299),
-    "Czechia": (49.8175, 15.4730),
-    "Denmark": (56.2639, 9.5018),
-    "Djibouti": (11.8251, 42.5903),
-    "Dominica": (15.4150, -61.3710),
-    "Dominican Republic": (18.7357, -70.1627),
-    "Ecuador": (-1.8312, -78.1834),
-    "Egypt": (26.8206, 30.8025),
-    "El Salvador": (13.7942, -88.8965),
-    "Equatorial Guinea": (1.6508, 10.2679),
-    "Eritrea": (15.1794, 39.7823),
-    "Estonia": (58.5953, 25.0136),
-    "Eswatini": (-26.5225, 31.4659),
-    "Ethiopia": (9.1450, 40.4897),
-    "Fiji": (-17.7134, 178.0650),
-    "Finland": (61.9241, 25.7482),
-    "France": (46.2276, 2.2137),
-    "Gabon": (-0.8037, 11.6094),
-    "Gambia": (13.4432, -15.3101),
-    "Georgia": (42.3154, 43.3569),
+    "France": (46.6034, 1.8883),
     "Germany": (51.1657, 10.4515),
-    "Ghana": (7.9465, -1.0232),
-    "Greece": (39.0742, 21.8243),
-    "Grenada": (12.1165, -61.6790),
-    "Guatemala": (15.7835, -90.2308),
-    "Guinea": (9.9456, -9.6966),
-    "Guinea-Bissau": (11.8037, -15.1804),
-    "Guyana": (4.8604, -58.9302),
-    "Haiti": (18.9712, -72.2852),
-    "Honduras": (15.2000, -86.2419),
-    "Hungary": (47.1625, 19.5033),
-    "Iceland": (64.9631, -19.0208),
     "India": (20.5937, 78.9629),
-    "Indonesia": (-0.7893, 113.9213),
-    "Iran": (32.4279, 53.6880),
-    "Iraq": (33.2232, 43.6793),
-    "Ireland": (53.4129, -8.2439),
-    "Israel": (31.0461, 34.8516),
     "Italy": (41.8719, 12.5674),
-    "Ivory Coast": (7.5400, -5.5471),
-    "Jamaica": (18.1096, -77.2975),
     "Japan": (36.2048, 138.2529),
-    "Jordan": (30.5852, 36.2384),
-    "Kazakhstan": (48.0196, 66.9237),
-    "Kenya": (-0.0236, 37.9062),
-    "Kiribati": (-3.3704, -168.7340),
-    "Kuwait": (29.3117, 47.4818),
-    "Kyrgyzstan": (41.2044, 74.7661),
-    "Laos": (19.8563, 102.4955),
-    "Latvia": (56.8796, 24.6032),
-    "Lebanon": (33.8547, 35.8623),
-    "Lesotho": (-29.6100, 28.2336),
-    "Liberia": (6.4281, -9.4295),
-    "Libya": (26.3351, 17.2283),
-    "Liechtenstein": (47.1660, 9.5554),
-    "Lithuania": (55.1694, 23.8813),
-    "Luxembourg": (49.8153, 6.1296),
-    "Madagascar": (-18.7669, 46.8691),
-    "Malawi": (-13.2543, 34.3015),
-    "Malaysia": (4.2105, 101.9758),
-    "Maldives": (3.2028, 73.2207),
-    "Mali": (17.5707, -3.9962),
-    "Malta": (35.9375, 14.3754),
-    "Marshall Islands": (7.1315, 171.1845),
-    "Mauritania": (21.0079, -10.9408),
-    "Mauritius": (-20.3484, 57.5522),
-    "Mexico": (23.6345, -102.5528),
-    "Micronesia": (7.4256, 150.5508),
-    "Moldova": (47.4116, 28.3699),
-    "Monaco": (43.7384, 7.4246),
-    "Mongolia": (46.8625, 103.8467),
-    "Montenegro": (42.7087, 19.3744),
-    "Morocco": (31.7917, -7.0926),
-    "Mozambique": (-18.6657, 35.5296),
-    "Myanmar": (21.9162, 95.9560),
-    "Namibia": (-22.9576, 18.4904),
-    "Nauru": (-0.5228, 166.9315),
-    "Nepal": (28.3949, 84.1240),
-    "Netherlands": (52.3676, 4.9041),
-    "New Zealand": (-40.9006, 174.8860),
-    "Nicaragua": (12.8654, -85.2072),
-    "Niger": (17.6078, 8.0817),
-    "Nigeria": (9.0820, 8.6753),
-    "North Korea": (40.3399, 127.5101),
-    "North Macedonia": (41.6086, 21.7453),
-    "Norway": (60.4720, 8.4689),
-    "Oman": (21.4735, 55.9754),
-    "Pakistan": (30.3753, 69.3451),
-    "Palau": (7.5148, 134.5825),
-    "Panama": (8.5379, -80.7821),
-    "Papua New Guinea": (-6.3149, 143.9555),
-    "Paraguay": (-23.4425, -58.4438),
-    "Peru": (-9.1900, -75.0152),
-    "Philippines": (12.8797, 121.7740),
-    "Poland": (51.9194, 19.1451),
-    "Portugal": (39.3999, -8.2245),
-    "Qatar": (25.3548, 51.1839),
-    "Romania": (45.9432, 24.9668),
     "Russia": (61.5240, 105.3188),
-    "Rwanda": (-1.9403, 29.8739),
-    "Saint Kitts and Nevis": (17.3578, -62.7830),
-    "Saint Lucia": (13.9094, -60.9789),
-    "Saint Vincent and the Grenadines": (13.2528, -61.1990),
-    "Samoa": (-13.7590, -172.1046),
-    "San Marino": (43.9424, 12.4578),
-    "Sao Tome and Principe": (0.1864, 6.6131),
-    "Saudi Arabia": (23.8859, 45.0792),
-    "Senegal": (14.4974, -14.4524),
-    "Serbia": (44.0165, 21.0059),
-    "Seychelles": (-4.6796, 55.4920),
-    "Sierra Leone": (8.4606, -11.7799),
-    "Singapore": (1.3521, 103.8198),
-    "Slovakia": (48.6690, 19.6990),
-    "Slovenia": (46.1512, 14.9955),
-    "Solomon Islands": (-9.6457, 160.1562),
-    "Somalia": (5.1521, 46.1996),
     "South Africa": (-30.5595, 22.9375),
-    "South Korea": (35.9078, 127.7669),
-    "South Sudan": (6.8769, 31.3069),
-    "Spain": (40.4637, -3.7492),
-    "Sri Lanka": (7.8731, 80.7718),
-    "Sudan": (12.8628, 30.2176),
-    "Suriname": (3.9193, -56.0278),
-    "Sweden": (60.1282, 18.6435),
-    "Switzerland": (46.8182, 8.2275),
-    "Syria": (34.8021, 38.9968),
-    "Taiwan": (23.6978, 120.9605),
-    "Tajikistan": (38.8610, 71.2761),
-    "Tanzania": (-6.3690, 34.8888),
-    "Thailand": (15.8700, 100.9925),
-    "Timor-Leste": (-8.8742, 125.7275),
-    "Togo": (8.6195, 0.8248),
-    "Tonga": (-21.1780, -175.1982),
-    "Trinidad and Tobago": (10.6918, -61.2225),
-    "Tunisia": (33.8869, 9.5375),
-    "Turkey": (38.9637, 35.2433),
-    "Turkmenistan": (38.9697, 59.5563),
-    "Tuvalu": (-7.1095, 177.6493),
-    "Uganda": (1.3733, 32.2903),
-    "Ukraine": (48.3794, 31.1656),
-    "United Arab Emirates": (23.4241, 53.8478),
     "United Kingdom": (55.3781, -3.4360),
     "United States": (37.0902, -95.7129),
-    "Uruguay": (-32.5228, -55.7658),
-    "Uzbekistan": (41.3775, 64.5853),
-    "Vanuatu": (-15.3767, 166.9592),
-    "Vatican City": (41.9029, 12.4534),
-    "Venezuela": (6.4238, -66.5897),
-    "Vietnam": (14.0583, 108.2772),
-    "Yemen": (15.5527, 48.5164),
-    "Zambia": (-13.1339, 27.8493),
-    "Zimbabwe": (-19.0154, 29.1549),
     "Unknown": (0, 0)
 }
 
 def get_mitre_mapping(threat):
     return MITRE_ATTACK_MAPPING.get(threat, {"technique": "N/A", "tactic": "N/A", "name": "Not Mapped"})
-
-def check_java_version():
-    try:
-        result = subprocess.run(
-            [f"{JAVA_HOME}\\bin\\java", "-version"],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        if "21.0" in result.stderr:
-            logger.info(f"Java JDK 21 detected at {JAVA_HOME}")
-            return True
-        else:
-            logger.error("JDK 21 required, found different version")
-            return False
-    except Exception as e:
-        logger.error(f"Java version check failed: {e}")
-        return False
-
-def check_dependencies():
-    try:
-        import streamlit_folium
-        import folium
-        import geoip2.database
-        import matplotlib
-        import pytz
-        logger.info("streamlit_folium, folium, geoip2, matplotlib, and pytz imported successfully")
-    except ImportError as e:
-        logger.error(f"Dependency import error: {str(e)}")
-        st.error(f"Missing dependencies: {str(e)}. Run 'pip install streamlit-folium folium geoip2 ipaddress matplotlib numpy pytz'.")
-        st.stop()
 
 def is_public_ip(ip):
     try:
@@ -309,6 +102,7 @@ def is_public_ip(ip):
         logger.warning(f"Invalid IP address: {ip}")
         return False
 
+@lru_cache(maxsize=1000)
 def get_country_from_ip(ip):
     logger.debug(f"Geolocation attempt for IP: {ip}")
     if not is_public_ip(ip):
@@ -322,20 +116,6 @@ def get_country_from_ip(ip):
             return "Unknown"
         with geoip2.database.Reader(GEOIP_DB_PATH) as reader:
             try:
-                test_country = reader.country("8.8.8.8").country.name
-                logger.debug(f"Database validation successful: Resolved 8.8.8.8 to {test_country}")
-            except Exception as e:
-                if "country method cannot be used" in str(e).lower():
-                    error_msg = f"Invalid database at {GEOIP_DB_PATH}. Expected GeoLite2-Country.mmdb, but found GeoLite2-ASN.mmdb or another type. Replace with GeoLite2-Country.mmdb from MaxMind."
-                    logger.error(error_msg)
-                    st.error(error_msg)
-                    return "Unknown"
-                else:
-                    error_msg = f"Database validation error at {GEOIP_DB_PATH}: {str(e)}"
-                    logger.error(error_msg)
-                    st.error(error_msg)
-                    return "Unknown"
-            try:
                 response = reader.country(ip)
                 country = response.country.name
                 country = country if country else "Unknown"
@@ -344,13 +124,9 @@ def get_country_from_ip(ip):
             except geoip2.errors.AddressNotFoundError:
                 logger.warning(f"IP {ip} not found in GeoIP2 database")
                 return "Unknown"
-    except geoip2.errors.GeoIP2Error as e:
-        logger.error(f"GeoIP2 error for {ip}: {str(e)}")
-        st.error(f"GeoIP2 error: {str(e)}. Verify {GEOIP_DB_PATH} is a valid GeoLite2-Country.mmdb file.")
-        return "Unknown"
     except Exception as e:
         logger.error(f"Unexpected geolocation error for {ip}: {str(e)}")
-        st.error(f"Unexpected geolocation error: {str(e)}. Check database file and permissions.")
+        st.error(f"Unexpected geolocation error: {str(e)}")
         return "Unknown"
 
 def resolve_ip_to_domain(ip):
@@ -362,135 +138,46 @@ def resolve_ip_to_domain(ip):
         logger.warning(f"Could not resolve IP {ip} to domain")
         return None
 
-def check_ssl_certificate(domain):
+def nmap_scan(ip):
     try:
-        context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_REQUIRED
-        with socket.create_connection((domain, 443)) as sock:
-            with context.wrap_socket(sock, server_hostname=domain) as ssock:
-                cert = ssock.getpeercert()
-                expiry_str = cert.get("notAfter")
-                expiry_date = parse(expiry_str)
-                if expiry_date.tzinfo is not None:
-                    current_time = datetime.now(tz=pytz.UTC)
-                else:
-                    current_time = datetime.now()
-                is_expired = expiry_date < current_time
-                hostname_matches = False
-                cert_hostnames = []
-                for field in cert.get("subject", []):
-                    if field[0][0] == "commonName":
-                        cert_hostnames.append(field[0][1])
-                for extension in cert.get("subjectAltName", []):
-                    if extension[0] == "DNS":
-                        cert_hostnames.append(extension[1])
-                for cert_hostname in cert_hostnames:
-                    if cert_hostname.startswith("*."):
-                        cert_domain = cert_hostname[2:]
-                        if domain == cert_domain or domain.endswith("." + cert_domain):
-                            hostname_matches = True
-                            break
-                    elif cert_hostname == domain:
-                        hostname_matches = True
-                        break
-                result = {
-                    "issuer": cert.get("issuer"),
-                    "subject": cert.get("subject"),
-                    "expiry": expiry_str,
-                    "valid": hostname_matches and not is_expired,
-                    "expired": is_expired,
-                    "hostname_match": hostname_matches,
-                    "cert_hostnames": cert_hostnames
-                }
-                if not hostname_matches:
-                    logger.warning(f"Hostname mismatch for {domain}: certificate valid for {cert_hostnames}")
-                    result["error"] = f"Hostname mismatch: certificate valid for {cert_hostnames}"
-                logger.debug(f"SSL check result for {domain}: {result}")
-                return result
+        nm = nmap.PortScanner()
+        logger.debug(f"Starting Nmap scan for IP: {ip}")
+        nm.scan(ip, arguments='-sS --open -p 1-1024')
+        ports = []
+        for host in nm.all_hosts():
+            for proto in nm[host].all_protocols():
+                lport = nm[host][proto].keys()
+                for port in lport:
+                    state = nm[host][proto][port]['state']
+                    service = nm[host][proto][port].get('name', 'unknown')
+                    if state == 'open':
+                        ports.append({"port": port, "state": state, "service": service})
+        logger.info(f"Nmap scan completed for {ip}: {len(ports)} open ports found")
+        return {"ports": ports}
     except Exception as e:
-        logger.error(f"SSL check error for {domain}: {str(e)}")
-        return {"error": str(e), "valid": False, "expired": False, "hostname_match": False}
+        logger.error(f"Nmap scan error for {ip}: {str(e)}")
+        return {"error": f"Nmap scan failed: {str(e)}"}
 
-def dns_analysis(domain):
-    results = {}
-    try:
-        for record_type in ['MX', 'TXT', 'SPF', 'DMARC']:
-            try:
-                answers = dns.resolver.resolve(domain, record_type)
-                results[record_type] = [str(r) for r in answers]
-            except:
-                results[record_type] = []
-        return results
-    except Exception as e:
-        logger.error(f"DNS analysis error for {domain}: {str(e)}")
-        return {"error": str(e)}
-
-def subdomain_enumeration(domain):
-    try:
-        common_subdomains = ['www', 'mail', 'ftp', 'api', 'dev', 'test']
-        subdomains = []
-        for sub in common_subdomains:
-            try:
-                socket.gethostbyname(f"{sub}.{domain}")
-                subdomains.append(f"{sub}.{domain}")
-            except:
-                pass
-        return subdomains
-    except Exception as e:
-        logger.error(f"Subdomain enumeration error for {domain}: {str(e)}")
-        return []
-
-def calculate_threat_score(prediction, vt_result, flaws, ssl_result, scan_result, packet_indicators):
+def calculate_threat_score(prediction, vt_result, flaws, ssl_result, scan_result, packet_indicators, otx_result=None):
     score = 0
-    max_individual_score = 15
-    safe_threshold = 30
-
-    if isinstance(prediction, str) and prediction != "Safe" and "Error" not in prediction:
-        score += min(10, max_individual_score)
-    elif "Error" in str(prediction):
-        score += 3
-
+    if isinstance(prediction, str) and prediction != "Safe":
+        score += 10 if prediction == "Low Risk" else 20
     if isinstance(vt_result, str) and "threats detected" in vt_result.lower():
-        score += min(10, max_individual_score)
-    else:
-        score += 1
-
+        score += 10
     if isinstance(flaws, list) and flaws and "No major flaws detected" not in flaws:
-        severe_flaws = [f for f in flaws if any(k in f.lower() for k in ["xss", "sqli", "rce"])]
-        if severe_flaws:
-            score += min(8, max_individual_score)
-        else:
-            score += 3
-    else:
-        score += 0
-
-    if isinstance(ssl_result, dict):
-        if ssl_result.get("expired", False):
-            score += min(5, max_individual_score)
-        if not ssl_result.get("hostname_match", True):
-            score += min(10, max_individual_score)  # Increased score for hostname mismatch
-        if ssl_result.get("valid", True):
-            score -= 2
-
+        score += 8
+    if isinstance(ssl_result, dict) and (ssl_result.get("expired", False) or not ssl_result.get("hostname_match", True)):
+        score += 5
     if isinstance(scan_result, dict) and scan_result.get("ports"):
-        suspicious_ports = [port["port"] for port in scan_result["ports"] if port["port"] in [4444, 6667, 31337]]
+        suspicious_ports = [port["port"] for port in scan_result["ports"] if port["port"] in [4444, 6667]]
         if suspicious_ports:
-            score += min(5, max_individual_score)
-        else:
-            score -= 1
-
+            score += 5
     if isinstance(packet_indicators, dict) and packet_indicators.get("suspicious", False):
-        details = packet_indicators.get("details", [])
-        if len(details) > 1:
-            score += min(8, max_individual_score)
-        elif len(details) == 1:
-            score += 4
-    else:
-        score -= 1
-
+        score += 5
+    if isinstance(otx_result, dict) and otx_result.get("pulse_count", 0) > 0:
+        score += otx_result["pulse_count"] * 2
     score = max(0, min(score, 100))
-    logger.debug(f"Calculated threat score: {score}, Prediction: {prediction}")
+    logger.debug(f"Calculated threat score: {score}")
     return score
 
 def read_last_n_lines(file_path, n=50):
@@ -498,523 +185,577 @@ def read_last_n_lines(file_path, n=50):
         with open(file_path, "r", encoding="latin-1") as f:
             lines = f.readlines()
             return lines[-n:] if lines else ["No logs available"]
-    except FileNotFoundError:
-        logger.error(f"Log file not found: {file_path}")
-        return ["Log file not found"]
     except Exception as e:
         logger.error(f"Error reading log file {file_path}: {str(e)}")
         return [f"Error reading log file: {str(e)}"]
 
-def analyze_packets(packets):
-    indicators = {"suspicious": False, "details": []}
+def get_available_interfaces():
     try:
-        ip_counts = {}
-        for pkt in packets:
-            if IP in pkt:
-                dst_ip = pkt[IP].dst
-                if is_public_ip(dst_ip):
-                    ip_counts[dst_ip] = ip_counts.get(dst_ip, 0) + 1
-        for ip, count in ip_counts.items():
-            if count > 40:
-                indicators["suspicious"] = True
-                indicators["details"].append(f"High outbound traffic to {ip}: {count} packets")
-
-        suspicious_ports = {4444, 6667, 31337}
-        for pkt in packets:
-            if TCP in pkt or UDP in pkt:
-                port = pkt[TCP].dport if TCP in pkt else pkt[UDP].dport
-                if port in suspicious_ports:
-                    indicators["suspicious"] = True
-                    indicators["details"].append(f"Connection to suspicious port {port}")
-
-        for pkt in packets:
-            if IP in pkt:
-                src_ip = pkt[IP].src
-                dst_ip = pkt[IP].dst
-                if src_ip in THREAT_INTEL_IPS or dst_ip in THREAT_INTEL_IPS:
-                    indicators["suspicious"] = True
-                    indicators["details"].append(f"Connection to known malicious IP: {src_ip if src_ip in THREAT_INTEL_IPS else dst_ip}")
-
-        return indicators
+        interfaces = get_working_ifaces()
+        return [iface.name for iface in interfaces] if interfaces else ["Wi-Fi"]
     except Exception as e:
-        logger.error(f"Packet analysis error: {str(e)}")
-        return {"suspicious": False, "details": [f"Error: {str(e)}"]}
+        logger.error(f"Error fetching interfaces: {str(e)}")
+        st.error(f"Error fetching network interfaces: {str(e)}. Defaulting to 'Wi-Fi'.")
+        return ["Wi-Fi"]
 
-def process_uploaded_files(pcap_file, csv_file):
+def geocode_country(country):
+    coords = FALLBACK_COORDINATES.get(country.strip(), FALLBACK_COORDINATES["Unknown"])
+    return coords
+
+def process_packet_data(packets=None, network_analysis=None, max_packets=1000):
+    logger.debug("Starting packet data processing")
+    if network_analysis:
+        logger.debug("Processing network analysis data")
+        packet_indicators = network_analysis
+        protocol_distribution = network_analysis.get("protocol_distribution", {})
+        traffic_direction = network_analysis.get("traffic_direction", {"inbound": 0, "outbound": 0})
+        packet_sizes = network_analysis.get("packet_sizes", [])
+        connection_states = network_analysis.get("connection_states", {"SYN": 0, "ACK": 0, "FIN": 0, "RST": 0})
+        top_talkers = network_analysis.get("top_talkers", {"sources": {}, "destinations": {}})
+        port_usage = network_analysis.get("port_usage", {"source_ports": {}, "dest_ports": {}})
+        details = packet_indicators.get("details", [])
+        if packet_indicators.get("suspicious", False):
+            st.warning(f"Packet Analysis Warning: {'; '.join(details)}")
+    elif packets:
+        logger.debug("Processing packets from PCAP")
+        packets_to_process = packets[:max_packets]
+        logger.info(f"Processing {len(packets_to_process)} packets (limited to {max_packets})")
+        packet_indicators = analyze_packets(packets_to_process)
+        if "error" in packet_indicators:
+            logger.error(f"Packet analysis failed: {packet_indicators['error']}")
+            return packet_indicators, {}, {"inbound": 0, "outbound": 0}, [], {"SYN": 0, "ACK": 0, "FIN": 0, "RST": 0}, {"sources": {}, "destinations": {}}, {"source_ports": {}, "dest_ports": {}}
+        protocol_distribution = packet_indicators.get("protocol_distribution", {})
+        traffic_direction = packet_indicators.get("traffic_direction", {"inbound": 0, "outbound": 0})
+        packet_sizes = packet_indicators.get("packet_sizes", [])
+        packet_sizes = [int(size) for size in packet_sizes if isinstance(size, (int, float))]
+        connection_states = packet_indicators.get("connection_states", {"SYN": 0, "ACK": 0, "FIN": 0, "RST": 0})
+        top_talkers = packet_indicators.get("top_talkers", {"sources": {}, "destinations": {}})
+        port_usage = packet_indicators.get("port_usage", {"source_ports": {}, "dest_ports": {}})
+        details = packet_indicators.get("details", [])
+        payload_suspicion = packet_indicators.get("payload_suspicion", [])
+        if packet_indicators.get("suspicious", False):
+            st.warning(f"Packet Analysis Warning: {'; '.join(details)}")
+        if payload_suspicion:
+            st.warning(f"Payload Concerns: {'; '.join(payload_suspicion)}")
+    else:
+        logger.warning("No packets or network analysis provided")
+        return None, None, None, None, None, None, None
+
+    if not packet_sizes:
+        logger.warning("Packet sizes list is empty. Check PCAP content or analyze_packets implementation.")
+    logger.debug(f"Protocol distribution: {protocol_distribution}")
+    logger.debug(f"Traffic direction: {traffic_direction}")
+    logger.debug(f"Packet sizes: {packet_sizes}")
+    logger.debug(f"Connection states: {connection_states}")
+    logger.debug(f"Top talkers: {top_talkers}")
+    logger.debug(f"Port usage: {port_usage}")
+
+    return packet_indicators, protocol_distribution, traffic_direction, packet_sizes, connection_states, top_talkers, port_usage
+
+def display_packet_analysis(protocol_distribution, traffic_direction, packet_sizes, connection_states, top_talkers, port_usage):
+    col1, col2 = st.columns(2)
+
+    with col1:
+        with st.expander("Protocol Distribution", expanded=True):
+            if protocol_distribution:
+                st.write("**Protocol Breakdown:**")
+                proto_df = pd.DataFrame(list(protocol_distribution.items()), columns=["Protocol", "Count"])
+                fig = px.pie(proto_df, names="Protocol", values="Count", title="Protocol Distribution",
+                             color_discrete_sequence=["#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4"])
+                st.plotly_chart(fig, use_container_width=True, key="protocol_distribution_chart")
+            else:
+                st.write("No protocol data available.")
+
+        with st.expander("Packet Size Analysis", expanded=True):
+            if packet_sizes:
+                st.write("**Packet Size Distribution:**")
+                size_df = pd.DataFrame(packet_sizes, columns=["Size"])
+                fig = px.histogram(size_df, x="Size", nbins=20, title="Packet Size Distribution",
+                                   color_discrete_sequence=["#4ECDC4"])
+                st.plotly_chart(fig, use_container_width=True, key="packet_size_chart")
+                avg_size = sum(packet_sizes) / len(packet_sizes) if packet_sizes else 0
+                largest_packet = str(max(packet_sizes)) if packet_sizes else "0"
+                smallest_packet = str(min(packet_sizes)) if packet_sizes else "0"
+                st.write(f"**Average Packet Size:** {avg_size:.2f} bytes")
+                st.write(f"**Largest Packet:** {largest_packet} bytes")
+                st.write(f"**Smallest Packet:** {smallest_packet} bytes")
+            else:
+                st.write("No packet size data available.")
+
+        with st.expander("TCP Connection States", expanded=True):
+            st.write("**Connection States (TCP):**")
+            st.table(pd.DataFrame.from_dict(connection_states, orient="index", columns=["Count"]))
+
+    with col2:
+        with st.expander("Traffic Direction", expanded=True):
+            st.write(f"**Inbound Traffic:** {traffic_direction['inbound']} packets")
+            st.write(f"**Outbound Traffic:** {traffic_direction['outbound']} packets")
+
+        with st.expander("Top Talkers", expanded=True):
+            st.write("**Top Source IPs:**")
+            if top_talkers["sources"]:
+                sources_df = pd.DataFrame.from_dict(top_talkers["sources"], orient="index", columns=["Packet Count"])
+                sources_df.reset_index(inplace=True)
+                sources_df.rename(columns={"index": "Source IP"}, inplace=True)
+                sources_df["Geolocation"] = sources_df["Source IP"].apply(
+                    lambda ip: f"{get_country_from_ip(ip)}"
+                )
+                fig_sources = px.bar(sources_df, x="Packet Count", y="Source IP", title="Top Source IPs",
+                                     hover_data=["Geolocation"], color_discrete_sequence=["#FF6B6B"])
+                st.plotly_chart(fig_sources, use_container_width=True, key="top_sources_chart")
+                st.table(sources_df[["Source IP", "Packet Count", "Geolocation"]])
+            else:
+                st.write("No data available.")
+            st.write("**Top Destination IPs:**")
+            if top_talkers["destinations"]:
+                destinations_df = pd.DataFrame.from_dict(top_talkers["destinations"], orient="index", columns=["Packet Count"])
+                destinations_df.reset_index(inplace=True)
+                destinations_df.rename(columns={"index": "Destination IP"}, inplace=True)
+                destinations_df["Geolocation"] = destinations_df["Destination IP"].apply(
+                    lambda ip: f"{get_country_from_ip(ip)}"
+                )
+                fig_destinations = px.bar(destinations_df, x="Packet Count", y="Destination IP", title="Top Destination IPs",
+                                          hover_data=["Geolocation"], color_discrete_sequence=["#45B7D1"])
+                st.plotly_chart(fig_destinations, use_container_width=True, key="top_destinations_chart")
+                st.table(destinations_df[["Destination IP", "Packet Count", "Geolocation"]])
+            else:
+                st.write("No data available.")
+
+        with st.expander("Port Usage", expanded=True):
+            st.write("**Top Source Ports:**")
+            if port_usage["source_ports"]:
+                src_ports_df = pd.DataFrame.from_dict(port_usage["source_ports"], orient="index", columns=["Count"])
+                src_ports_df.reset_index(inplace=True)
+                src_ports_df.rename(columns={"index": "Source Port"}, inplace=True)
+                fig_src_ports = px.bar(src_ports_df, x="Count", y="Source Port", title="Top Source Ports",
+                                       color_discrete_sequence=["#96CEB4"])
+                st.plotly_chart(fig_src_ports, use_container_width=True, key="source_ports_chart")
+                st.table(src_ports_df)
+            else:
+                st.write("No data available.")
+            st.write("**Top Destination Ports:**")
+            if port_usage["dest_ports"]:
+                dst_ports_df = pd.DataFrame.from_dict(port_usage["dest_ports"], orient="index", columns=["Count"])
+                dst_ports_df.reset_index(inplace=True)
+                dst_ports_df.rename(columns={"index": "Destination Port"}, inplace=True)
+                fig_dst_ports = px.bar(dst_ports_df, x="Count", y="Destination Port", title="Top Destination Ports",
+                                       color_discrete_sequence=["#FFEEAD"])
+                st.plotly_chart(fig_dst_ports, use_container_width=True, key="dest_ports_chart")
+                st.table(dst_ports_df)
+            else:
+                st.write("No data available.")
+
+def analyze_domain_or_ip(domain, ip, packet_indicators):
+    analysis_result = {"domain": domain, "ip": ip}
+    
+    domain_results = parallel_domain_analysis(domain)
+    ssl_result = domain_results.get("SSL", {"error": "SSL check failed"})
+    otx_result = domain_results.get("OTX", {"error": "OTX lookup failed"})
+    vt_result = domain_results.get("VirusTotal", "VirusTotal lookup failed")
+    whois_result = domain_results.get("WHOIS", {"error": "WHOIS lookup failed"})
+    
+    scan_result = nmap_scan(ip)
+    
+    flaws_result = check_flaws(domain)
+    if isinstance(flaws_result, list):
+        flaws_result = [str(f) for f in flaws_result if f is not None]
+    else:
+        flaws_result = []
+    
+    prediction, probabilities = predict_threat(domain, packet_indicators=packet_indicators, ssl_result=ssl_result, scan_result=scan_result)
+    
+    threat_score = calculate_threat_score(prediction, vt_result, flaws_result, ssl_result, scan_result, packet_indicators, otx_result)
+    
+    analysis_result.update({
+        "prediction": prediction,
+        "probabilities": probabilities,
+        "threat_score": threat_score,
+        "virustotal": vt_result,
+        "security_audit": flaws_result,
+        "otx": otx_result,
+        "whois": [[k, ', '.join(v) if isinstance(v, list) else str(v)] for k, v in whois_result.items()] if "error" not in whois_result else whois_result,
+        "ssl": ssl_result,
+        "scan": scan_result
+    })
+    
+    return analysis_result, prediction, probabilities, threat_score, vt_result, flaws_result, otx_result
+
+def display_analysis_result(domain, analysis_result, prediction, probabilities, threat_score, vt_result, flaws_result, otx_result, ssl_result, scan_result):
+    with st.expander(f"Analysis for {domain}", expanded=True):
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("#### Threat Prediction")
+            if isinstance(prediction, str) and "Error" not in prediction:
+                if prediction == "Safe":
+                    st.success(f"Prediction: {prediction} (Threat Score: {threat_score}/100)")
+                elif prediction in ["Malware", "Suspicious"]:
+                    st.error(f"Prediction: {prediction} (Threat Score: {threat_score}/100)")
+                    if prediction == "Malware":
+                        st.session_state.threat_counts["malware"] += 1
+                    elif prediction == "Suspicious":
+                        st.session_state.threat_counts["suspicious"] = st.session_state.threat_counts.get("suspicious", 0) + 1
+                    st.session_state.recent_threats.append([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), domain, prediction, threat_score])
+                else:
+                    st.warning(f"Prediction: {prediction} (Threat Score: {threat_score}/100)")
+                    st.session_state.threat_counts[prediction.lower()] += 1
+                    st.session_state.recent_threats.append([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), domain, prediction, threat_score])
+            else:
+                st.warning(f"Prediction failed: {prediction}")
+
+            if probabilities:
+                prob_df = pd.DataFrame(list(probabilities.items()), columns=["Threat Level", "Probability"])
+                fig = px.bar(prob_df, x="Probability", y="Threat Level", orientation="h",
+                             title="Threat Level Probabilities",
+                             color="Threat Level",
+                             color_discrete_map={"Safe": "green", "Low Risk": "orange", "Malware": "red", "Suspicious": "purple"})
+                fig.update_layout(xaxis_title="Probability", yaxis_title="", showlegend=False)
+                st.plotly_chart(fig, use_container_width=True, key=f"threat_probabilities_{domain}")
+
+            st.markdown("#### Basic Information")
+            st.write(f"**IP Address:** {analysis_result['ip']}")
+            st.write(f"**Country:** {get_country_from_ip(analysis_result['ip'])}")
+            st.write(f"**VirusTotal Result:** {vt_result}")
+            st.write(f"**Security Audit:** {', '.join(flaws_result) if flaws_result else 'No major flaws detected'}")
+
+            st.markdown("#### WHOIS Lookup")
+            whois_data = analysis_result.get("whois", {"error": "WHOIS lookup failed"})
+            if isinstance(whois_data, dict) and 'error' in whois_data:
+                st.error(whois_data['error'])
+            else:
+                st.table(pd.DataFrame(whois_data, columns=['Field', 'Value']))
+
+        with col2:
+            st.markdown("#### SSL Certificate Details")
+            if 'error' not in ssl_result:
+                st.write(f"- **Expired:** {'Yes' if ssl_result['expired'] else 'No'}")
+                st.write(f"- **Expiration Date:** {ssl_result['not_after']}")
+                st.write(f"- **Hostname Match:** {'Yes' if ssl_result['hostname_match'] else 'No'}")
+                if ssl_result['expired'] or not ssl_result['hostname_match']:
+                    st.warning("Potential security issues detected with the SSL/TLS certificate.")
+            else:
+                st.error(ssl_result['error'])
+
+            st.markdown("#### Nmap Scan Results")
+            if 'error' in scan_result:
+                st.error(f"Nmap Scan Error: {scan_result['error']}")
+            else:
+                ports = scan_result.get('ports', [])
+                if ports:
+                    ports_df = pd.DataFrame(ports)
+                    st.table(ports_df)
+                else:
+                    st.write("No open ports found.")
+
+def process_uploaded_files(pcap_file):
     analysis_results = []
     threat_locations = st.session_state.get("threat_locations", [])
 
     if pcap_file is None:
+        logger.warning("No PCAP file uploaded")
         return analysis_results
 
-    try:
-        pcap_path = os.path.join(log_dir, f"uploaded_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pcap")
-        with open(pcap_path, "wb") as f:
-            f.write(pcap_file.read())
-        logger.info(f"Saved uploaded PCAP to {pcap_path}")
+    with st.spinner("Analyzing uploaded file..."):
+        try:
+            pcap_path = os.path.join(log_dir, f"uploaded_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pcap")
+            with open(pcap_path, "wb") as f:
+                f.write(pcap_file.read())
+            logger.info(f"Saved uploaded PCAP to {pcap_path}")
 
-        packets = rdpcap(pcap_path)
-        packet_indicators = analyze_packets(packets)
-        if packet_indicators["suspicious"]:
-            st.warning(f"Packet Analysis Warning: {'; '.join(packet_indicators['details'])}")
-        else:
-            logger.debug("No suspicious packets detected in PCAP analysis")
+            packets = rdpcap(pcap_path)
+            logger.info(f"Loaded {len(packets)} packets from PCAP file")
+            packet_indicators = analyze_packets(packets)
+            if "error" in packet_indicators:
+                st.error(packet_indicators["error"])
+                logger.warning(f"Packet analysis failed: {packet_indicators['error']}")
+                return analysis_results
 
-        ips = [pkt[IP].src for pkt in packets if IP in pkt] + [pkt[IP].dst for pkt in packets if IP in pkt]
-        unique_ips = list(dict.fromkeys(ips))[:5]
+            st.subheader("PCAP File Analysis")
+            if packet_indicators["suspicious"]:
+                st.warning("Suspicious activity detected in the PCAP file:")
+                for detail in packet_indicators["details"]:
+                    st.write(f"- {detail}")
+                if packet_indicators["payload_suspicion"]:
+                    st.write("Suspicious payloads detected:")
+                    for suspicion in packet_indicators["payload_suspicion"]:
+                        st.write(f"- {suspicion}")
+            else:
+                st.success("No suspicious activity detected in the PCAP file.")
 
-        st.subheader("PCAP File Analysis")
-        st.write(f"Found {len(unique_ips)} unique IPs (analyzing first 5)")
+            packet_indicators, protocol_distribution, traffic_direction, packet_sizes, connection_states, top_talkers, port_usage = process_packet_data(packets=packets)
+            display_packet_analysis(protocol_distribution, traffic_direction, packet_sizes, connection_states, top_talkers, port_usage)
 
-        valid_ips = [ip for ip in unique_ips if is_public_ip(ip)]
-        if not valid_ips:
-            st.warning("No valid public IPs found in PCAP. Map will not update. Ensure PCAP contains traffic to public servers.")
-            logger.warning("No valid public IPs found in PCAP")
-            return analysis_results
+            st.subheader("PCAP File Analysis")
+            ips = [pkt[IP].src for pkt in packets if IP in pkt] + [pkt[IP].dst for pkt in packets if IP in pkt]
+            unique_ips = list(dict.fromkeys(ips))[:5]
+            st.write(f"Found {len(unique_ips)} unique IPs (analyzing first 5)")
 
-        for ip in unique_ips:
-            if not is_public_ip(ip):
-                logger.debug(f"Skipping invalid or non-public IP: {ip}")
-                continue
+            valid_ips = [ip for ip in unique_ips if is_public_ip(ip)]
+            if not valid_ips:
+                st.warning("No valid public IPs found in PCAP.")
+                return analysis_results
 
-            try:
-                logger.debug(f"Processing IP: {ip}")
-                domain = resolve_ip_to_domain(ip)
-                if not domain:
-                    logger.debug(f"Skipping IP {ip}: Could not resolve to a domain")
-                    continue
+            progress = st.progress(0)
+            status_text = st.empty()
+            total_ips = len(valid_ips)
 
-                country = get_country_from_ip(ip)
-                analysis_result = {"domain": domain, "ip": ip}
-
-                ssl_result = check_ssl_certificate(domain)
-                scan_result = nmap_scan(ip)
-
+            for idx, ip in enumerate(valid_ips):
+                status_text.text(f"Analyzing IP {ip} ({idx + 1}/{total_ips})...")
                 try:
-                    prediction = predict_threat(domain, packet_indicators=packet_indicators, ssl_result=ssl_result, scan_result=scan_result)
-                    logger.info(f"Prediction for {domain}: {prediction}")
-                    logger.debug(f"Prediction inputs for {domain}: packet_indicators={packet_indicators}, ssl_result={ssl_result}, scan_result={scan_result}")
-                except Exception as e:
-                    prediction = f"Prediction Error: {str(e)}"
-                    logger.error(f"Prediction error for {domain}: {str(e)}")
+                    domain = resolve_ip_to_domain(ip)
+                    if not domain:
+                        logger.warning(f"Could not resolve domain for IP {ip}")
+                        continue
 
-                if not packet_indicators.get("suspicious", False) and prediction == "Safe":
-                    prediction = "Safe"
-                    logger.debug(f"Set prediction to 'Safe' for {domain} due to lack of indicators")
+                    country = get_country_from_ip(ip)
 
-                vt_result = virustotal_lookup(domain)
-                flaws_result = check_flaws(domain)
-                threat_score = calculate_threat_score(prediction, vt_result, flaws_result, ssl_result, scan_result, packet_indicators)
+                    analysis_result, prediction, probabilities, threat_score, vt_result, flaws_result, otx_result = analyze_domain_or_ip(domain, ip, packet_indicators)
 
-                # Adjust prediction based on SSL hostname mismatch
-                if isinstance(ssl_result, dict) and not ssl_result.get("hostname_match", True):
-                    if prediction == "Safe" or prediction == "Low Risk":
-                        prediction = "Malware"
-                        logger.debug(f"Adjusted prediction for {domain} to 'Malware' due to SSL hostname mismatch")
-                    threat_score = max(threat_score, 50)  # Ensure score reflects severity
+                    threat_entry = {
+                        "ip": ip,
+                        "country": country,
+                        "threat": prediction if isinstance(prediction, str) and "Error" not in prediction and prediction != "Safe" else "PCAP Entry",
+                        "domain": domain,
+                        "threat_score": f"{threat_score}/100",
+                        "vt_result": vt_result,
+                        "flaws": "; ".join(flaws_result) if flaws_result else "None"
+                    }
 
-                if threat_score < 30 and prediction != "Malware":
-                    prediction = "Safe"
-                    logger.debug(f"Adjusted prediction for {domain} to 'Safe' due to low threat score {threat_score}")
-                elif 30 <= threat_score < 50 and prediction == "Safe":
-                    prediction = "Low Risk"
-                    logger.debug(f"Adjusted prediction for {domain} to 'Low Risk' due to threat score {threat_score}")
+                    if country != "Unknown" and threat_entry not in threat_locations:
+                        threat_locations.append(threat_entry)
 
-                analysis_result.update({
-                    "prediction": prediction,
-                    "threat_score": threat_score,
-                    "virustotal": vt_result,
-                    "security_audit": flaws_result,
-                    "ssl": ssl_result,
-                    "nmap": scan_result
-                })
+                    display_analysis_result(domain, analysis_result, prediction, probabilities, threat_score, vt_result, flaws_result, otx_result, analysis_result["ssl"], analysis_result["scan"])
 
-                base_entry = {
-                    "ip": ip,
-                    "country": country,
-                    "threat": prediction if isinstance(prediction, str) and "Error" not in prediction and prediction != "Safe" else "PCAP Entry",
-                    "domain": domain,
-                    "threat_score": f"{threat_score}/100",
-                    "vt_result": vt_result,
-                    "flaws": "; ".join(flaws_result) if flaws_result else "None"
-                }
+                    for flaw in flaws_result:
+                        flaw_key = flaw.lower()
+                        if "xss" in flaw_key:
+                            st.session_state.threat_counts["xss"] += 1
+                            if country != "Unknown":
+                                entry = threat_entry.copy()
+                                entry["threat"] = "XSS"
+                                if entry not in threat_locations:
+                                    threat_locations.append(entry)
+                        if "sqli" in flaw_key:
+                            st.session_state.threat_counts["sqli"] += 1
+                            if country != "Unknown":
+                                entry = threat_entry.copy()
+                                entry["threat"] = "SQLi"
+                                if entry not in threat_locations:
+                                    threat_locations.append(entry)
 
-                if country != "Unknown" and base_entry not in threat_locations:
-                    threat_locations.append(base_entry)
-                    logger.info(f"Added threat entry for {country}: {base_entry}")
+                    if packet_indicators.get("suspicious", False):
+                        for suspicion in packet_indicators.get("payload_suspicion", []):
+                            suspicion_lower = suspicion.lower()
+                            if "malware" in suspicion_lower:
+                                st.session_state.threat_counts["malware"] += 1
+                                if country != "Unknown":
+                                    entry = threat_entry.copy()
+                                    entry["threat"] = "Malware"
+                                    if entry not in threat_locations:
+                                        threat_locations.append(entry)
+                            elif "sqlmap" in suspicion_lower:
+                                st.session_state.threat_counts["sqli"] += 1
+                                if country != "Unknown":
+                                    entry = threat_entry.copy()
+                                    entry["threat"] = "SQLi"
+                                    if entry not in threat_locations:
+                                        threat_locations.append(entry)
 
-                if isinstance(prediction, str) and "Error" not in prediction:
-                    if prediction == "Safe":
-                        st.success(f"Prediction: {prediction} (Threat Score: {threat_score}/100)", icon="✅")
-                    elif prediction == "Malware":
-                        st.error(f"Prediction: {prediction} (Threat Score: {threat_score}/100)", icon="⚠️")
-                        st.session_state.threat_counts[prediction.lower()] = st.session_state.threat_counts.get(prediction.lower(), 0) + 1
-                        st.session_state.recent_threats.append([
-                            datetime.now().strftime("%Y-%m-%d %H:%M:%S"), domain, prediction, threat_score
-                        ])
-                    else:
-                        st.warning(f"Prediction: {prediction} (Threat Score: {threat_score}/100)", icon="⚠️")
-                        st.session_state.threat_counts[prediction.lower()] = st.session_state.threat_counts.get(prediction.lower(), 0) + 1
-                        st.session_state.recent_threats.append([
-                            datetime.now().strftime("%Y-%m-%d %H:%M:%S"), domain, prediction, threat_score
-                        ])
-                else:
-                    st.warning(f"Prediction failed: {prediction} (Threat Score: {threat_score}/100)", icon="⚠️")
-
-                for flaw in flaws_result:
-                    flaw_key = flaw.lower()
-                    if any(k in flaw_key for k in ["xss", "sqli"]):
-                        flaw_type = "XSS" if "xss" in flaw_key else "SQLi"
-                        st.session_state.threat_counts[flaw_type.lower()] += 1
+                    if "threats detected" in vt_result.lower():
+                        st.session_state.vt_alerts += 1
                         if country != "Unknown":
-                            entry = base_entry.copy()
-                            entry["threat"] = flaw_type
-                            if entry not in threat_locations:
-                                threat_locations.append(entry)
+                            vt_entry = threat_entry.copy()
+                            vt_entry["threat"] = "VirusTotal"
+                            if vt_entry not in threat_locations:
+                                threat_locations.append(vt_entry)
 
-                if "threats detected" in vt_result.lower():
-                    st.session_state.vt_alerts += 1
-                    if country != "Unknown":
-                        vt_entry = base_entry.copy()
-                        vt_entry["threat"] = "VirusTotal"
-                        if vt_entry not in threat_locations:
-                            threat_locations.append(vt_entry)
+                    analysis_results.append(analysis_result)
 
-                with st.expander(f"WHOIS Lookup for {domain}"):
-                    try:
-                        whois_result = whois_lookup(domain)
-                        if 'error' not in whois_result:
-                            whois_data = [[k, ', '.join(v) if isinstance(v, list) else str(v)] for k, v in whois_result.items()]
-                            st.table(pd.DataFrame(whois_data, columns=['Field', 'Value']))
-                            analysis_result["whois"] = whois_data
-                        else:
-                            st.error(whois_result['error'])
-                            analysis_result["whois"] = [("Error", whois_result['error'])]
-                    except Exception as e:
-                        st.error(f"WHOIS error: {str(e)}")
-                        analysis_result["whois"] = [("Error", str(e))]
+                except Exception as e:
+                    logger.error(f"Error processing IP {ip}: {str(e)}")
+                    st.error(f"Error processing IP {ip}: {str(e)}")
+                
+                progress.progress((idx + 1) / total_ips)
 
-                with st.expander(f"Network Scan for {domain}"):
-                    if 'error' not in scan_result:
-                        ports = scan_result.get('ports', [])
-                        if isinstance(ports, list) and all(isinstance(p, dict) for p in ports):
-                            ports_df = pd.DataFrame(ports)
-                            if not ports_df.empty:
-                                st.table(ports_df[['port', 'state']])
-                                analysis_result["nmap"] = ports_df[['port', 'state']].to_dict()
-                            else:
-                                st.warning("No open ports found")
-                                analysis_result["nmap"] = [("Warning", "No open ports found")]
-                        else:
-                            st.warning("Invalid port data format")
-                            analysis_result["nmap"] = [("Warning", "Invalid port data")]
-                    else:
-                        st.error(scan_result['error'])
-                        analysis_result["nmap"] = [("Error", scan_result['error'])]
+            status_text.text("PCAP analysis complete!")
 
-                with st.expander(f"SSL/TLS Certificate for {domain}"):
-                    if ssl_result.get("valid"):
-                        st.write(f"Issuer: {ssl_result['issuer']}\nSubject: {ssl_result['subject']}\nExpiry: {ssl_result['expiry']}")
-                        if ssl_result.get("expired"):
-                            st.warning("Certificate has expired!")
-                        if not ssl_result.get("hostname_match"):
-                            st.warning(f"Hostname mismatch: Certificate is valid for {ssl_result['cert_hostnames']}")
-                    else:
-                        st.error(f"SSL error: {ssl_result.get('error')}")
-                        analysis_result["ssl"] = [("Error", ssl_result.get('error'))]
-
-                with st.expander(f"DNS Analysis for {domain}"):
-                    dns_result = dns_analysis(domain)
-                    if "error" not in dns_result:
-                        st.write(f"MX: {dns_result.get('MX', [])}\nTXT: {dns_result.get('TXT', [])}")
-                        analysis_result["dns"] = dns_result
-                    else:
-                        st.error(f"DNS error: {dns_result['error']}")
-                        analysis_result["dns"] = [("Error", dns_result['error'])]
-
-                with st.expander(f"Subdomains for {domain}"):
-                    subdomains = subdomain_enumeration(domain)
-                    if subdomains:
-                        st.write(", ".join(subdomains))
-                        analysis_result["subdomains"] = subdomains
-                    else:
-                        st.write("No subdomains found")
-                        analysis_result["subdomains"] = [("Warning", "No subdomains found")]
-
-                analysis_results.append(analysis_result)
-
-            except Exception as e:
-                logger.error(f"Error processing IP {ip}: {str(e)}")
-                st.error(f"Error processing IP {ip}: {str(e)}")
-
-        st.success(f"Processed PCAP file with {len(valid_ips)} valid entries")
-
-    except Exception as e:
-        logger.error(f"Top-level PCAP processing error: {str(e)}")
-        st.error(f"Failed to analyze PCAP: {str(e)}")
+        except Exception as e:
+            logger.error(f"Top-level PCAP processing error: {str(e)}")
+            st.error(f"Failed to analyze PCAP: {str(e)}")
 
     st.session_state.threat_locations = threat_locations
+    logger.debug(f"Threat locations after PCAP processing: {threat_locations}")
     return analysis_results
 
 def capture_traffic(interface, duration, output_path):
     try:
         logger.info(f"Capturing traffic on {interface} for {duration} seconds, saving to {output_path}")
-        packets = sniff(iface=interface, timeout=duration)
+        packets = sniff(iface=interface, timeout=duration, filter="tcp or udp")
         wrpcap(output_path, packets)
         logger.info(f"Captured {len(packets)} packets, saved to {output_path}")
-        return True
+        return packets
     except PermissionError as e:
         logger.error(f"Permission error during capture: {str(e)}")
-        st.error(f"Permission error: {str(e)}. Run as administrator.")
+        st.error(f"Permission error: {str(e)}. Run Streamlit as administrator.")
         raise
     except Exception as e:
         logger.error(f"Traffic capture error: {str(e)}")
         st.error(f"Error capturing traffic: {str(e)}")
         raise
 
-def process_live_capture(pcap_path):
+def process_live_capture(interface, duration):
     analysis_results = []
-    threat_locations = st.session_state.threat_locations
+    threat_locations = st.session_state.get("threat_locations", [])
+    
+    with st.spinner("Capturing packets..."):
+        try:
+            pcap_path = os.path.join(log_dir, f"live_capture_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pcap")
+            packets = capture_traffic(interface, duration, pcap_path)
+            network_analysis = capture_and_analyze_packets(duration=duration, interface=interface)
+            if "error" in network_analysis:
+                st.error(network_analysis["error"])
+                logger.warning(f"Live capture failed: {network_analysis['error']}")
+                return analysis_results
 
-    try:
-        packets = rdpcap(pcap_path)
-        packet_indicators = analyze_packets(packets)
-        if packet_indicators["suspicious"]:
-            st.warning(f"Packet Analysis Warning: {'; '.join(packet_indicators['details'])}")
-        else:
-            logger.debug("No suspicious packets detected in live capture")
+            st.subheader("Live Capture Analysis")
+            if network_analysis["suspicious"]:
+                st.warning("Suspicious activity detected during live capture:")
+                for detail in network_analysis["details"]:
+                    st.write(f"- {detail}")
+            else:
+                st.success("No suspicious activity detected during live capture.")
 
-        ips = [pkt[IP].src for pkt in packets if IP in pkt] + [pkt[IP].dst for pkt in packets if IP in pkt]
-        unique_ips = list(dict.fromkeys(ips))[:5]
-        st.subheader("Live Capture Analysis")
-        st.write(f"Found {len(unique_ips)} unique IPs (analyzing first 5)")
+            packet_indicators, protocol_distribution, traffic_direction, packet_sizes, connection_states, top_talkers, port_usage = process_packet_data(network_analysis=network_analysis)
+            display_packet_analysis(protocol_distribution, traffic_direction, packet_sizes, connection_states, top_talkers, port_usage)
 
-        valid_ips = [ip for ip in unique_ips if is_public_ip(ip)]
-        if not valid_ips:
-            st.warning("No valid public IPs found in capture. Ensure traffic includes public servers.")
-            logger.warning("No valid public IPs found in capture")
-            return analysis_results
+            st.subheader("Live Capture Analysis")
+            ips = [pkt[IP].src for pkt in packets if IP in pkt] + [pkt[IP].dst for pkt in packets if IP in pkt]
+            unique_ips = list(dict.fromkeys(ips))[:5]
+            st.write(f"Found {len(unique_ips)} unique IPs (analyzing first 5)")
 
-        for ip in unique_ips:
-            if not is_public_ip(ip):
-                logger.debug(f"Skipping invalid or non-public IP: {ip}")
-                continue
+            valid_ips = [ip for ip in unique_ips if is_public_ip(ip)]
+            if not valid_ips:
+                st.warning("No valid public IPs found in capture.")
+                return analysis_results
 
-            try:
-                logger.debug(f"Processing IP: {ip}")
-                domain = resolve_ip_to_domain(ip)
-                if not domain:
-                    logger.debug(f"Skipping IP {ip}: Could not resolve to a domain")
-                    continue
+            progress = st.progress(0)
+            status_text = st.empty()
+            total_ips = len(valid_ips)
 
-                country = get_country_from_ip(ip)
-                analysis_result = {"domain": domain, "ip": ip}
-
-                ssl_result = check_ssl_certificate(domain)
-                scan_result = nmap_scan(ip)
+            for idx, ip in enumerate(valid_ips):
+                status_text.text(f"Analyzing IP {ip} ({idx + 1}/{total_ips})...")
                 try:
-                    prediction = predict_threat(domain, packet_indicators=packet_indicators, ssl_result=ssl_result, scan_result=scan_result)
-                    logger.info(f"Prediction for {domain}: {prediction}")
+                    domain = resolve_ip_to_domain(ip)
+                    if not domain:
+                        continue
+
+                    country = get_country_from_ip(ip)
+
+                    analysis_result, prediction, probabilities, threat_score, vt_result, flaws_result, otx_result = analyze_domain_or_ip(domain, ip, packet_indicators)
+
+                    threat_entry = {
+                        "ip": ip,
+                        "country": country,
+                        "threat": prediction if isinstance(prediction, str) and "Error" not in prediction and prediction != "Safe" else "Live Capture",
+                        "domain": domain,
+                        "threat_score": f"{threat_score}/100",
+                        "vt_result": vt_result,
+                        "flaws": "; ".join(flaws_result) if flaws_result else "None"
+                    }
+
+                    if country != "Unknown" and threat_entry not in threat_locations:
+                        threat_locations.append(threat_entry)
+
+                    display_analysis_result(domain, analysis_result, prediction, probabilities, threat_score, vt_result, flaws_result, otx_result, analysis_result["ssl"], analysis_result["scan"])
+
+                    for flaw in flaws_result:
+                        flaw_key = flaw.lower()
+                        if "xss" in flaw_key:
+                            st.session_state.threat_counts["xss"] += 1
+                            if country != "Unknown":
+                                entry = threat_entry.copy()
+                                entry["threat"] = "XSS"
+                                if entry not in threat_locations:
+                                    threat_locations.append(entry)
+                        if "sqli" in flaw_key:
+                            st.session_state.threat_counts["sqli"] += 1
+                            if country != "Unknown":
+                                entry = threat_entry.copy()
+                                entry["threat"] = "SQLi"
+                                if entry not in threat_locations:
+                                    threat_locations.append(entry)
+
+                    if packet_indicators.get("suspicious", False):
+                        for suspicion in packet_indicators.get("payload_suspicion", []):
+                            suspicion_lower = suspicion.lower()
+                            if "malware" in suspicion_lower:
+                                st.session_state.threat_counts["malware"] += 1
+                                if country != "Unknown":
+                                    entry = threat_entry.copy()
+                                    entry["threat"] = "Malware"
+                                    if entry not in threat_locations:
+                                        threat_locations.append(entry)
+                            elif "sqlmap" in suspicion_lower:
+                                st.session_state.threat_counts["sqli"] += 1
+                                if country != "Unknown":
+                                    entry = threat_entry.copy()
+                                    entry["threat"] = "SQLi"
+                                    if entry not in threat_locations:
+                                        threat_locations.append(entry)
+
+                    if "threats detected" in vt_result.lower():
+                        st.session_state.vt_alerts += 1
+                        if country != "Unknown":
+                            vt_entry = threat_entry.copy()
+                            vt_entry["threat"] = "VirusTotal"
+                            if vt_entry not in threat_locations:
+                                threat_locations.append(vt_entry)
+
+                    analysis_results.append(analysis_result)
+
                 except Exception as e:
-                    prediction = f"Prediction Error: {str(e)}"
-                    logger.error(f"Prediction error for {domain}: {str(e)}")
+                    logger.error(f"Analysis error for {ip}: {str(e)}")
+                    st.error(f"Analysis error: {str(e)}")
+                
+                progress.progress((idx + 1) / total_ips)
 
-                if not packet_indicators.get("suspicious", False) and prediction == "Safe":
-                    prediction = "Safe"
-                    logger.debug(f"Set prediction to 'Safe' for {domain} due to lack of indicators")
+            status_text.text("Live capture analysis complete!")
 
-                vt_result = virustotal_lookup(domain)
-                flaws_result = check_flaws(domain)
-                threat_score = calculate_threat_score(prediction, vt_result, flaws_result, ssl_result, scan_result, packet_indicators)
-
-                # Adjust prediction based on SSL hostname mismatch
-                if isinstance(ssl_result, dict) and not ssl_result.get("hostname_match", True):
-                    if prediction == "Safe" or prediction == "Low Risk":
-                        prediction = "Malware"
-                        logger.debug(f"Adjusted prediction for {domain} to 'Malware' due to SSL hostname mismatch")
-                    threat_score = max(threat_score, 50)  # Ensure score reflects severity
-
-                analysis_result["prediction"] = prediction
-                analysis_result["threat_score"] = threat_score
-                analysis_result["virustotal"] = vt_result
-                analysis_result["security_audit"] = flaws_result
-                analysis_result["ssl"] = ssl_result
-                analysis_result["nmap"] = scan_result
-
-                threat_entry = {
-                    "ip": ip,
-                    "country": country,
-                    "threat": prediction if isinstance(prediction, str) and "Error" not in prediction and prediction != "Safe" else "Live Capture",
-                    "domain": domain,
-                    "threat_score": f"{threat_score}/100",
-                    "vt_result": vt_result,
-                    "flaws": "; ".join(flaws_result) if flaws_result else "None"
-                }
-
-                if country != "Unknown" and threat_entry not in threat_locations:
-                    threat_locations.append(threat_entry)
-                    logger.info(f"Added threat entry for {country}: {threat_entry}")
-
-                if isinstance(prediction, str) and "Error" not in prediction:
-                    if prediction == "Safe":
-                        st.success(f"Prediction: {prediction} (Threat Score: {threat_score}/100)", icon="✅")
-                    elif prediction == "Malware":
-                        st.error(f"Prediction: {prediction} (Threat Score: {threat_score}/100)", icon="⚠️")
-                        st.session_state.threat_counts[prediction.lower()] = st.session_state.threat_counts.get(prediction.lower(), 0) + 1
-                        st.session_state.recent_threats.append([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), domain, prediction, threat_score])
-                    else:
-                        st.warning(f"Prediction: {prediction} (Threat Score: {threat_score}/100)", icon="⚠️")
-                        st.session_state.threat_counts[prediction.lower()] = st.session_state.threat_counts.get(prediction.lower(), 0) + 1
-                        st.session_state.recent_threats.append([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), domain, prediction, threat_score])
-                else:
-                    st.warning(f"Prediction failed: {prediction} (Threat Score: {threat_score}/100)", icon="⚠️")
-
-                for flaw in flaws_result:
-                    if "XSS" in flaw:
-                        st.session_state.threat_counts['xss'] += 1
-                        if country != "Unknown":
-                            threat_locations.append({
-                                "ip": ip,
-                                "country": country,
-                                "threat": "XSS",
-                                "domain": domain,
-                                "threat_score": f"{threat_score}/100",
-                                "vt_result": vt_result,
-                                "flaws": "; ".join(flaws_result)
-                            })
-                    if "SQLi" in flaw:
-                        st.session_state.threat_counts['sqli'] += 1
-                        if country != "Unknown":
-                            threat_locations.append({
-                                "ip": ip,
-                                "country": country,
-                                "threat": "SQLi",
-                                "domain": domain,
-                                "threat_score": f"{threat_score}/100",
-                                "vt_result": vt_result,
-                                "flaws": "; ".join(flaws_result)
-                            })
-
-                if "threats detected" in vt_result.lower():
-                    st.session_state.vt_alerts += 1
-                    if country != "Unknown":
-                        threat_locations.append({
-                            "ip": ip,
-                            "country": country,
-                            "threat": "VirusTotal",
-                            "domain": domain,
-                            "threat_score": f"{threat_score}/100",
-                            "vt_result": vt_result,
-                            "flaws": "; ".join(flaws_result)
-                        })
-
-                with st.expander(f"WHOIS Lookup for {domain}"):
-                    try:
-                        whois_result = whois_lookup(domain)
-                        if 'error' not in whois_result:
-                            whois_data = [[k, ', '.join(v) if isinstance(v, list) else str(v)] for k, v in whois_result.items()]
-                            st.table(pd.DataFrame(whois_data, columns=['Field', 'Value']))
-                            analysis_result["whois"] = whois_data
-                        else:
-                            st.error(whois_result['error'])
-                            analysis_result["whois"] = [("Error", whois_result['error'])]
-                    except Exception as e:
-                        st.error(f"WHOIS error: {str(e)}")
-                        analysis_result["whois"] = [("Error", str(e))]
-
-                with st.expander(f"Network Scan for {domain}"):
-                    if 'error' not in scan_result:
-                        ports = scan_result.get('ports', [])
-                        if isinstance(ports, list) and all(isinstance(p, dict) and 'port' in p and 'state' in p for p in ports):
-                            ports_df = pd.DataFrame(ports)
-                            if not ports_df.empty:
-                                st.table(ports_df[['port', 'state']])
-                                analysis_result["nmap"] = ports_df[['port', 'state']].to_dict()
-                            else:
-                                st.warning("No open ports found")
-                                analysis_result["nmap"] = [("Warning", "No open ports found")]
-                        else:
-                            st.warning("Invalid port data format from nmap_scan")
-                            analysis_result["nmap"] = [("Warning", "Invalid port data")]
-                    else:
-                        st.error(scan_result['error'])
-                        analysis_result["nmap"] = [("Error", scan_result['error'])]
-
-                with st.expander(f"SSL/TLS Certificate for {domain}"):
-                    if ssl_result.get("valid"):
-                        st.write(f"Issuer: {ssl_result['issuer']}\nSubject: {ssl_result['subject']}\nExpiry: {ssl_result['expiry']}")
-                        if ssl_result.get("expired"):
-                            st.warning("Certificate has expired!")
-                        if not ssl_result.get("hostname_match"):
-                            st.warning(f"Hostname mismatch: Certificate is valid for {ssl_result['cert_hostnames']}")
-                    else:
-                        st.error(f"SSL error: {ssl_result.get('error')}")
-                        analysis_result["ssl"] = [("Error", ssl_result.get('error'))]
-
-                with st.expander(f"DNS Analysis for {domain}"):
-                    dns_result = dns_analysis(domain)
-                    if "error" not in dns_result:
-                        st.write(f"MX: {dns_result.get('MX', [])}\nTXT: {dns_result.get('TXT', [])}")
-                        analysis_result["dns"] = dns_result
-                    else:
-                        st.error(f"DNS error: {dns_result['error']}")
-                        analysis_result["dns"] = [("Error", dns_result['error'])]
-
-                with st.expander(f"Subdomains for {domain}"):
-                    subdomains = subdomain_enumeration(domain)
-                    if subdomains:
-                        st.write(", ".join(subdomains))
-                        analysis_result["subdomains"] = subdomains
-                    else:
-                        st.write("No subdomains found")
-                        analysis_result["subdomains"] = [("Warning", "No subdomains found")]
-
-                analysis_results.append(analysis_result)
-
-            except Exception as e:
-                logger.error(f"Analysis error for {ip}: {str(e)}")
-                st.error(f"Analysis error: {str(e)}")
-                analysis_result["prediction"] = f"Error: {str(e)}"
-
-    except Exception as e:
-        logger.error(f"Live capture processing error: {str(e)}")
-        st.error(f"Error processing live capture: {str(e)}")
+        except Exception as e:
+            logger.error(f"Live capture processing error: {str(e)}")
+            st.error(f"Error processing live capture: {str(e)}")
 
     st.session_state.threat_locations = threat_locations
+    logger.debug(f"Threat locations after live capture: {threat_locations}")
     return analysis_results
 
-def analyze_domain_for_map(domain):
-    threat_locations = st.session_state.threat_locations
-    if domain:
+def process_domain_analysis(domain):
+    analysis_results = []
+    threat_locations = st.session_state.get("threat_locations", [])
+
+    if not domain:
+        st.warning("Please enter a domain to analyze.")
+        return analysis_results
+
+    with st.spinner("Analyzing domain..."):
         try:
             ip = socket.gethostbyname(domain)
-            logger.debug(f"Resolved domain {domain} to IP: {ip}")
             if not is_public_ip(ip):
-                logger.debug(f"Skipping invalid or non-public IP: {ip}")
-                st.warning(f"IP {ip} is not a valid public IP. Skipping analysis.")
-                return threat_locations
+                st.warning(f"IP {ip} is not a valid public IP.")
+                return analysis_results
+
+            network_analysis = capture_and_analyze_packets(duration=10)
+            if "error" in network_analysis:
+                st.error(network_analysis["error"])
+                logger.warning(f"Network analysis failed: {network_analysis['error']}")
+                return analysis_results
+
+            packet_indicators, protocol_distribution, traffic_direction, packet_sizes, connection_states, top_talkers, port_usage = process_packet_data(network_analysis=network_analysis)
+            display_packet_analysis(protocol_distribution, traffic_direction, packet_sizes, connection_states, top_talkers, port_usage)
 
             country = get_country_from_ip(ip)
-            ssl_result = check_ssl_certificate(domain)
-            scan_result = nmap_scan(ip)
-            packet_indicators = {"suspicious": False, "details": []}
-            try:
-                prediction = predict_threat(domain, packet_indicators=packet_indicators, ssl_result=ssl_result, scan_result=scan_result)
-                logger.info(f"Prediction for {domain}: {prediction}")
-            except Exception as e:
-                prediction = f"Prediction Error: {str(e)}"
-                logger.error(f"Prediction error for {domain}: {str(e)}")
 
-            vt_result = virustotal_lookup(domain)
-            flaws_result = check_flaws(domain)
-            threat_score = calculate_threat_score(prediction, vt_result, flaws_result, ssl_result, scan_result, packet_indicators)
-
-            # Adjust prediction based on SSL hostname mismatch
-            if isinstance(ssl_result, dict) and not ssl_result.get("hostname_match", True):
-                if prediction == "Safe" or prediction == "Low Risk":
-                    prediction = "Malware"
-                    logger.debug(f"Adjusted prediction for {domain} to 'Malware' due to SSL hostname mismatch")
-                threat_score = max(threat_score, 50)  # Ensure score reflects severity
+            analysis_result, prediction, probabilities, threat_score, vt_result, flaws_result, otx_result = analyze_domain_or_ip(domain, ip, packet_indicators)
 
             threat_entry = {
                 "ip": ip,
@@ -1027,13 +768,76 @@ def analyze_domain_for_map(domain):
             }
             if country != "Unknown" and threat_entry not in threat_locations:
                 threat_locations.append(threat_entry)
-                logger.info(f"Added threat entry for {country}: {threat_entry}")
 
-            if isinstance(prediction, str) and "Error" not in prediction and prediction != "Safe":
+            st.subheader(f"Domain Analysis for {domain}")
+            display_analysis_result(domain, analysis_result, prediction, probabilities, threat_score, vt_result, flaws_result, otx_result, analysis_result["ssl"], analysis_result["scan"])
+
+            for flaw in flaws_result:
+                flaw_key = flaw.lower()
+                if "xss" in flaw_key:
+                    st.session_state.threat_counts["xss"] += 1
+                    if country != "Unknown":
+                        threat_locations.append({
+                            "ip": ip,
+                            "country": country,
+                            "threat": "XSS",
+                            "domain": domain,
+                            "threat_score": f"{threat_score}/100",
+                            "vt_result": vt_result,
+                            "flaws": "; ".join(flaws_result)
+                        })
+                if "sqli" in flaw_key:
+                    st.session_state.threat_counts["sqli"] += 1
+                    if country != "Unknown":
+                        threat_locations.append({
+                            "ip": ip,
+                            "country": country,
+                            "threat": "SQLi",
+                            "domain": domain,
+                            "threat_score": f"{threat_score}/100",
+                            "vt_result": vt_result,
+                            "flaws": "; ".join(flaws_result)
+                        })
+
+            if prediction in ["Malware", "Suspicious"]:
                 st.session_state.threat_counts[prediction.lower()] = st.session_state.threat_counts.get(prediction.lower(), 0) + 1
-                st.session_state.recent_threats.append([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), domain, prediction, threat_score])
-            elif "Error" in str(prediction):
-                st.warning(f"Prediction failed for {domain}: {prediction} (Threat Score: {threat_score}/100)")
+                if country != "Unknown":
+                    threat_locations.append({
+                        "ip": ip,
+                        "country": country,
+                        "threat": prediction,
+                        "domain": domain,
+                        "threat_score": f"{threat_score}/100",
+                        "vt_result": vt_result,
+                        "flaws": "; ".join(flaws_result)
+                    })
+            if packet_indicators.get("suspicious", False):
+                for suspicion in packet_indicators.get("payload_suspicion", []):
+                    suspicion_lower = suspicion.lower()
+                    if "malware" in suspicion_lower:
+                        st.session_state.threat_counts["malware"] += 1
+                        if country != "Unknown":
+                            threat_locations.append({
+                                "ip": ip,
+                                "country": country,
+                                "threat": "Malware",
+                                "domain": domain,
+                                "threat_score": f"{threat_score}/100",
+                                "vt_result": vt_result,
+                                "flaws": "; ".join(flaws_result)
+                            })
+                    elif "sqlmap" in suspicion_lower:
+                        st.session_state.threat_counts["sqli"] += 1
+                        if country != "Unknown":
+                            threat_locations.append({
+                                "ip": ip,
+                                "country": country,
+                                "threat": "SQLi",
+                                "domain": domain,
+                                "threat_score": f"{threat_score}/100",
+                                "vt_result": vt_result,
+                                "flaws": "; ".join(flaws_result)
+                            })
 
             if "threats detected" in vt_result.lower():
                 st.session_state.vt_alerts += 1
@@ -1047,9 +851,56 @@ def analyze_domain_for_map(domain):
                         "vt_result": vt_result,
                         "flaws": "; ".join(flaws_result)
                     })
+
+            analysis_results.append(analysis_result)
+
+        except Exception as e:
+            logger.error(f"Domain analysis error for {domain}: {str(e)}")
+            st.error(f"Error analyzing {domain}: {str(e)}")
+
+    st.session_state.threat_locations = threat_locations
+    logger.debug(f"Threat locations after domain analysis: {threat_locations}")
+    return analysis_results
+
+def analyze_domain_for_map(domain):
+    threat_locations = st.session_state.get("threat_locations", [])
+    if not domain:
+        logger.warning("No domain provided for map analysis")
+        return threat_locations
+
+    with st.spinner("Analyzing domain for map..."):
+        try:
+            ip = socket.gethostbyname(domain)
+            if not is_public_ip(ip):
+                st.warning(f"IP {ip} is not a valid public IP.")
+                return threat_locations
+
+            country = get_country_from_ip(ip)
+            packet_indicators = {"suspicious": False, "details": []}
+
+            analysis_result, prediction, probabilities, threat_score, vt_result, flaws_result, otx_result = analyze_domain_or_ip(domain, ip, packet_indicators)
+
+            threat_entry = {
+                "ip": ip,
+                "country": country,
+                "threat": prediction if isinstance(prediction, str) and "Error" not in prediction and prediction != "Safe" else "Analyzed",
+                "domain": domain,
+                "threat_score": f"{threat_score}/100",
+                "vt_result": vt_result,
+                "flaws": "; ".join(flaws_result) if flaws_result else "None"
+            }
+            if country != "Unknown" and threat_entry not in threat_locations:
+                threat_locations.append(threat_entry)
+                logger.info(f"Added threat entry for {domain}: {threat_entry}")
+
+            if isinstance(prediction, str) and "Error" not in prediction and prediction != "Safe":
+                st.session_state.threat_counts[prediction.lower()] = st.session_state.threat_counts.get(prediction.lower(), 0) + 1
+                st.session_state.recent_threats.append([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), domain, prediction, threat_score])
+
             for flaw in flaws_result:
-                if "XSS" in flaw:
-                    st.session_state.threat_counts['xss'] += 1
+                flaw_key = flaw.lower()
+                if "xss" in flaw_key:
+                    st.session_state.threat_counts["xss"] += 1
                     if country != "Unknown":
                         threat_locations.append({
                             "ip": ip,
@@ -1060,8 +911,8 @@ def analyze_domain_for_map(domain):
                             "vt_result": vt_result,
                             "flaws": "; ".join(flaws_result)
                         })
-                if "SQLi" in flaw:
-                    st.session_state.threat_counts['sqli'] += 1
+                if "sqli" in flaw_key:
+                    st.session_state.threat_counts["sqli"] += 1
                     if country != "Unknown":
                         threat_locations.append({
                             "ip": ip,
@@ -1073,40 +924,47 @@ def analyze_domain_for_map(domain):
                             "flaws": "; ".join(flaws_result)
                         })
 
+            if "threats detected" in vt_result.lower():
+                st.session_state.vt_alerts += 1
+                if country != "Unknown":
+                    threat_locations.append({
+                        "ip": ip,
+                        "country": country,
+                        "threat": "VirusTotal",
+                        "domain": domain,
+                        "threat_score": f"{threat_score}/100",
+                        "vt_result": vt_result,
+                        "flaws": "; ".join(flaws_result)
+                    })
+
         except Exception as e:
-            logger.error(f"Domain analysis error for {domain}: {str(e)}")
-            st.error(f"Error analyzing {domain}: {str(e)}")
+            logger.error(f"Domain analysis error for {domain} in map mode: {str(e)}")
+            st.error(f"Error analyzing {domain} for map: {str(e)}")
+
     st.session_state.threat_locations = threat_locations
+    logger.debug(f"Threat locations after map analysis: {threat_locations}")
     return threat_locations
 
-def geocode_country(country):
-    country = country.strip()
-    coords = FALLBACK_COORDINATES.get(country, FALLBACK_COORDINATES["Unknown"])
-    logger.debug(f"Geocoded {country} to {coords}")
-    return coords
-
-def get_available_interfaces():
-    try:
-        interfaces = get_working_ifaces()
-        return [iface.name for iface in interfaces] if interfaces else ["Wi-Fi"]
-    except Exception as e:
-        logger.error(f"Error fetching interfaces: {str(e)}")
-        return ["Wi-Fi"]
-
 def render_threat_map():
-    m = folium.Map(location=[0, 0], zoom_start=1, tiles="CartoDB Dark_Matter", width=700, height=600)
+    m = folium.Map(location=[20, 0], zoom_start=1.5, tiles="CartoDB Dark_Matter", width=800, height=500)
 
     valid_markers = 0
     bounds = []
     heatmap_data = []
     country_summary = []
-    if st.session_state.threat_locations:
+    threat_locations = st.session_state.get("threat_locations", [])
+    logger.debug(f"Rendering threat map with {len(threat_locations)} threat locations")
+
+    if not threat_locations:
+        st.warning("No threat locations available. Analyze a domain to populate the map.")
+        logger.warning("Threat locations list is empty")
+    else:
         country_entries = {}
-        for entry in st.session_state.threat_locations:
-            country = entry["country"]
+        for entry in threat_locations:
+            country = entry.get("country")
             domain = entry.get("domain", "N/A")
-            if domain == "N/A":
-                logger.debug(f"Skipping entry for {country}: Domain is 'N/A'")
+            if domain == "N/A" or not country:
+                logger.warning(f"Skipping entry due to missing domain or country: {entry}")
                 continue
             if country != "Unknown":
                 if country not in country_entries:
@@ -1116,15 +974,18 @@ def render_threat_map():
                 bounds.append([lat, lon])
                 try:
                     intensity = float(entry["threat_score"].split("/")[0]) / 100
-                except (ValueError, AttributeError):
+                except (ValueError, AttributeError) as e:
+                    logger.warning(f"Invalid threat score format for {domain}: {entry['threat_score']}, error: {str(e)}")
                     intensity = 0.1
                 heatmap_data.append([lat, lon, intensity])
                 valid_markers += 1
-                logger.debug(f"Processing entry for {country} at ({lat}, {lon})")
+                logger.debug(f"Added marker for {domain} at ({lat}, {lon}) with intensity {intensity}")
 
         if heatmap_data:
-            HeatMap(heatmap_data, radius=15, blur=10, max_zoom=1).add_to(m)
-            logger.debug("Added heatmap layer to map")
+            HeatMap(heatmap_data, radius=15, blur=10, max_zoom=1.5).add_to(m)
+            logger.debug(f"Added {len(heatmap_data)} heatmap points")
+        else:
+            logger.warning("No heatmap data to display")
 
         for country, entries in country_entries.items():
             lat, lon = geocode_country(country)
@@ -1136,7 +997,8 @@ def render_threat_map():
                 mitre = get_mitre_mapping(entry["threat"])
                 try:
                     score = float(entry["threat_score"].split("/")[0])
-                except (ValueError, AttributeError):
+                except (ValueError, AttributeError) as e:
+                    logger.warning(f"Invalid threat score for {entry['domain']}: {entry['threat_score']}, error: {str(e)}")
                     score = 0
                 total_score += score
                 popup_content += (
@@ -1154,7 +1016,7 @@ def render_threat_map():
                 popup=folium.Popup(popup_content, max_width=300, max_height=400),
                 icon=folium.Icon(color="red" if any(e["threat"] != "Analyzed" for e in entries) else "green", icon="info-sign")
             ).add_to(m)
-            logger.debug(f"Added marker for {country} with {len(entries)} entries")
+            logger.debug(f"Added marker for country {country} with {len(entries)} entries")
 
             if len(entries) >= 2:
                 domains_summary = []
@@ -1176,371 +1038,240 @@ def render_threat_map():
 
     if valid_markers > 1 and bounds:
         m.fit_bounds(bounds)
+        logger.debug("Map bounds set successfully")
     else:
         m.location = [20, 0]
-        m.zoom_start = 1
-        logger.info("Using default zoom level 1 due to single or no markers")
+        m.zoom_start = 2
+        logger.debug("Using default map location and zoom")
 
     with st.expander("Threat Statistics", expanded=True):
-        st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-        fig, ax = plt.subplots(figsize=(10, 5))
         threats = st.session_state.threat_counts
         if sum(threats.values()) == 0:
-            st.write("No threat data available. Analyze domains to populate. Check `predict_threat()` in scripts/predict.py to ensure it returns non-'Safe' predictions.")
-            logger.warning("Threat counts are zero. Verify predict_threat() logic.")
+            st.write("No threat data available. Analyze domains to populate.")
         else:
-            colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEEAD', '#D4A5A5']
-            bars = ax.bar(threats.keys(), threats.values(), color=colors[:len(threats)], edgecolor='#e0e8f0', linewidth=1.5)
-            for bar in bars:
-                yval = bar.get_height()
-                ax.text(bar.get_x() + bar.get_width()/2, yval + 0.1, int(yval), ha='center', va='bottom', fontsize=10, color='#e0e8f0')
-            ax.set_title("Threat Distribution", fontsize=14, pad=15, color='#e0e8f0')
-            ax.set_ylabel("Count", fontsize=12, color='#e0e8f0')
-            ax.set_xlabel("Threat Types", fontsize=12, color='#e0e8f0')
-            ax.grid(True, linestyle='--', alpha=0.7, color='#444')
-            plt.xticks(rotation=45, ha='right', fontsize=10, color='#e0e8f0')
-            plt.yticks(fontsize=10, color='#e0e8f0')
-            ax.set_facecolor('#2a3b4d')
-            fig.patch.set_facecolor('#2a3b4d')
-            ax.spines['top'].set_visible(False)
-            ax.spines['right'].set_visible(False)
-            ax.spines['left'].set_color('#e0e8f0')
-            ax.spines['bottom'].set_color('#e0e8f0')
-            st.pyplot(fig)
-        st.markdown('</div>', unsafe_allow_html=True)
+            threats_df = pd.DataFrame(list(threats.items()), columns=["Threat Type", "Count"])
+            fig = px.bar(threats_df, x="Count", y="Threat Type", orientation="h",
+                         title="Threat Distribution",
+                         color="Threat Type",
+                         color_discrete_sequence=["#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEEAD"])
+            fig.update_layout(xaxis_title="Count", yaxis_title="", showlegend=False)
+            st.plotly_chart(fig, use_container_width=True, key="threat_distribution_chart")
 
-    if country_summary:
-        with st.expander("Countries with Multiple Domains", expanded=True):
+        if country_summary:
+            st.write("**Countries with Multiple Threats:**")
             for summary in country_summary:
-                st.subheader(f"{summary['Country']} ({summary['Domain Count']} Domains)")
-                st.write(f"**Total Threat Score:** {summary['Total Threat Score']}")
-                df = pd.DataFrame(summary["Details"])
-                st.table(df)
+                st.write(f"**{summary['Country']}** - {summary['Domain Count']} domains, Total Threat Score: {summary['Total Threat Score']}")
+                details_df = pd.DataFrame(summary['Details'])
+                st.table(details_df)
 
-    with st.expander("Debug: Threat Locations"):
-        if st.session_state.threat_locations:
-            st.write(pd.DataFrame(st.session_state.threat_locations))
-        else:
-            st.write("No threat locations recorded. Analyze a domain to populate.")
+    try:
+        st_folium(m, width=1800, height=600)
+        st.write(f"Total markers plotted: {valid_markers}")
+    except Exception as e:
+        logger.error(f"Error rendering Folium map: {str(e)}")
+        st.error(f"Failed to render threat map: {str(e)}")
 
-    st_folium(m, width=700, height=600, returned_objects=[])
-    st.caption(f"Displaying {valid_markers} markers with heatmap")
-
-st.markdown("""
-    <style>
-    .stApp {
-        background: linear-gradient(135deg, #1a2a3b 0%, #2a3b4d 100%);
-        color: #e0e8f0;
-        font-family: 'Courier New', monospace;
-    }
-    .stButton>button {
-        background-color: #4da8da;
-        color: #e0e8f0;
-        border: 2px solid #4da8da;
-        border-radius: 8px;
-        padding: 10px 20px;
-        width: 100%;
-    }
-    .stButton>button:hover {
-        background-color: #b85450;
-        border-color: #b85450;
-    }
-    .active-tab>button {
-        background-color: #b85450;
-        border-color: #b85450;
-    }
-    .folium-map {
-        width: 100%;
-        height: 600px;
-        background-color: #1a1a1a;
-        z-index: 1000 !important;
-        margin-top: 0 !important;
-        padding-top: 0 !important;
-    }
-    .chart-container {
-        background-color: #2a3b4d;
-        padding: 10px;
-        border-radius: 8px;
-        margin-top: 10px;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
-if 'threat_counts' not in st.session_state:
-    st.session_state.threat_counts = {'ddos': 0, 'port_scan': 0, 'xss': 0, 'sqli': 0, 'ransomware': 0, 'malware': 0}
-if 'vt_alerts' not in st.session_state:
-    st.session_state.vt_alerts = 0
-if 'threat_locations' not in st.session_state:
-    st.session_state.threat_locations = []
-if 'mode' not in st.session_state:
-    st.session_state.mode = "Domain Analysis"
-if 'recent_threats' not in st.session_state:
-    st.session_state.recent_threats = []
-if 'analysis_results' not in st.session_state:
-    st.session_state.analysis_results = []
-
-check_dependencies()
-
-with st.sidebar:
-    st.subheader("File Uploads")
-    pcap_file = st.file_uploader("Upload PCAP file", type="pcap")
-    if st.button("Analyze Files"):
-        if pcap_file:
-            with st.spinner("Processing uploaded files..."):
-                if not check_java_version():
-                    st.error(f"Java JDK 21 required at {JAVA_HOME}. Please install or configure correctly.")
-                    st.stop()
-                process_uploaded_files(pcap_file, None)
-
-st.markdown('<h1 style="color: #4da8da;">CYBERSECURITY DASHBOARD</h1>', unsafe_allow_html=True)
-
-col1, col2, col3 = st.columns(3)
-with col1:
-    if st.session_state.mode == "Domain Analysis":
-        st.markdown('<div class="active-tab">', unsafe_allow_html=True)
-    if st.button("Domain Analysis"):
-        st.session_state.mode = "Domain Analysis"
-        st.session_state.analysis_results = []
-        st.rerun()
-    if st.session_state.mode == "Domain Analysis":
-        st.markdown('</div>', unsafe_allow_html=True)
-with col2:
-    if st.session_state.mode == "Live Capture":
-        st.markdown('<div class="active-tab">', unsafe_allow_html=True)
-    if st.button("Live Capture"):
-        st.session_state.mode = "Live Capture"
-        st.rerun()
-    if st.session_state.mode == "Live Capture":
-        st.markdown('</div>', unsafe_allow_html=True)
-with col3:
-    if st.session_state.mode == "Threat Map":
-        st.markdown('<div class="active-tab">', unsafe_allow_html=True)
-    if st.button("Threat Map"):
+def main():
+    if "mode" not in st.session_state:
         st.session_state.mode = "Threat Map"
-        st.rerun()
-    if st.session_state.mode == "Threat Map":
-        st.markdown('</div>', unsafe_allow_html=True)
+    if "threat_locations" not in st.session_state:
+        st.session_state.threat_locations = []
+    if "threat_counts" not in st.session_state:
+        st.session_state.threat_counts = {"malware": 0, "xss": 0, "sqli": 0, "low risk": 0, "suspicious": 0}
+    if "recent_threats" not in st.session_state:
+        st.session_state.recent_threats = []
+    if "vt_alerts" not in st.session_state:
+        st.session_state.vt_alerts = 0
+    if "analysis_results" not in st.session_state:
+        st.session_state.analysis_results = []
+    logger.debug("Session state initialized successfully.")
 
-if st.session_state.mode == "Domain Analysis":
-    st.header("Domain Analysis")
-    domain = st.text_input("Enter domain (e.g., google.com)", "")
-    if st.button("Analyze"):
-        if domain:
-            logger.info(f"Analyzing domain: {domain}")
-            with st.spinner("Analyzing..."):
-                if not check_java_version():
-                    st.error(f"Java JDK 21 required at {JAVA_HOME}. Please install or configure correctly.")
-                    st.stop()
-                st.session_state.analysis_results = []
-                try:
-                    st.subheader(f"Analysis for {domain}")
-                    ip = socket.gethostbyname(domain)
-                    analysis_result = {"domain": domain, "ip": ip}
-                    ssl_result = check_ssl_certificate(domain)
-                    scan_result = nmap_scan(ip)
-                    packet_indicators = {"suspicious": False, "details": []}
-                    try:
-                        prediction = predict_threat(domain, packet_indicators=packet_indicators, ssl_result=ssl_result, scan_result=scan_result)
-                        logger.info(f"Prediction for {domain}: {prediction}")
-                    except Exception as e:
-                        prediction = f"Prediction Error: {str(e)}"
-                        logger.error(f"Prediction error for {domain}: {str(e)}")
+    st.title("NetSec AI:AI-Powered IDS with Cyber Attack Detection ")
+    st.markdown("""
+        <style>
+/* Gradient Background */
+.main {
+  background: linear-gradient(135deg, #121417, #1f2a3a);
+  color: #e0e8f0;
+  padding: 16px;
+  min-height: 100vh;
+  font-family: 'Segoe UI', sans-serif;
+}
 
-                    vt_result = virustotal_lookup(domain)
-                    flaws_result = check_flaws(domain)
-                    threat_score = calculate_threat_score(prediction, vt_result, flaws_result, ssl_result, scan_result, packet_indicators)
+/* Headings */
+h1, h2, h3 {
+  color: #00ffc8;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 10px;
+}
 
-                    # Adjust prediction based on SSL hostname mismatch
-                    if isinstance(ssl_result, dict) and not ssl_result.get("hostname_match", True):
-                        if prediction == "Safe" or prediction == "Low Risk":
-                            prediction = "Malware"
-                            logger.debug(f"Adjusted prediction for {domain} to 'Malware' due to SSL hostname mismatch")
-                        threat_score = max(threat_score, 50)  # Ensure score reflects severity
+/* Buttons */
+.stButton>button {
+  background: linear-gradient(90deg, #00ffc8, #3ddc97);
+  color: #0e1117;
+  border: none;
+  padding: 10px 24px;
+  border-radius: 10px;
+  font-weight: bold;
+  transition: all 0.3s ease-in-out;
+  box-shadow: 0 0 10px #00ffc880;
+}
 
-                    analysis_result["prediction"] = prediction
-                    analysis_result["threat_score"] = threat_score
-                    analysis_result["virustotal"] = vt_result
-                    analysis_result["security_audit"] = flaws_result
-                    analysis_result["ssl"] = ssl_result
-                    analysis_result["nmap"] = scan_result
+.stButton>button:hover {
+  background: linear-gradient(90deg, #3ddc97, #00ffc8);
+  color: white;
+  box-shadow: 0 0 20px #00ffc8aa;
+}
 
-                    if isinstance(prediction, str) and "Error" not in prediction:
-                        if prediction == "Safe":
-                            st.success(f"Prediction: {prediction} (Threat Score: {threat_score}/100)", icon="✅")
-                        elif prediction == "Malware":
-                            st.error(f"Prediction: {prediction} (Threat Score: {threat_score}/100)", icon="⚠️")
-                            st.session_state.threat_counts[prediction.lower()] = st.session_state.threat_counts.get(prediction.lower(), 0) + 1
-                            st.session_state.recent_threats.append([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), domain, prediction, threat_score])
-                        else:
-                            st.warning(f"Prediction: {prediction} (Threat Score: {threat_score}/100)", icon="⚠️")
-                            st.session_state.threat_counts[prediction.lower()] = st.session_state.threat_counts.get(prediction.lower(), 0) + 1
-                            st.session_state.recent_threats.append([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), domain, prediction, threat_score])
-                    else:
-                        st.warning(f"Prediction failed: {prediction} (Threat Score: {threat_score}/100)", icon="⚠️")
+/* Input Fields */
+.stTextInput>div>div>input,
+.stTextArea>div>div>textarea,
+.stSelectbox>div>div>select {
+  background-color: #1e2433;
+  color: #e0e8f0;
+  border: 1px solid #3ddc97;
+  border-radius: 5px;
+  padding: 10px;
+}
 
-                    with st.expander("WHOIS Lookup"):
-                        whois_result = whois_lookup(domain)
-                        if 'error' not in whois_result:
-                            whois_data = [[k, ', '.join(v) if isinstance(v, list) else str(v)] for k, v in whois_result.items()]
-                            st.table(pd.DataFrame(whois_data, columns=['Field', 'Value']))
-                            analysis_result["whois"] = whois_data
-                        else:
-                            st.error(whois_result['error'])
-                            analysis_result["whois"] = [("Error", whois_result['error'])]
+/* Sliders */
+.stSlider>div>div>div {
+  background-color:black
+  border:1px solid #3ddc97;
+  border-radius: 5px;
+  color: #e0e8f0;
+}
 
-                    with st.expander("Network Scan"):
-                        if 'error' not in scan_result:
-                            ports = scan_result.get('ports', [])
-                            if isinstance(ports, list) and all(isinstance(p, dict) and 'port' in p and 'state' in p for p in ports):
-                                ports_df = pd.DataFrame(ports)
-                                if not ports_df.empty:
-                                    st.table(ports_df[['port', 'state']])
-                                    analysis_result["nmap"] = ports_df[['port', 'state']].to_dict()
-                                else:
-                                    st.warning("No open ports found")
-                                    analysis_result["nmap"] = [("Warning", "No open ports found")]
-                            else:
-                                st.warning("Invalid port data format from nmap_scan")
-                                analysis_result["nmap"] = [("Warning", "Invalid port data")]
-                        else:
-                            st.error(scan_result['error'])
-                            analysis_result["nmap"] = [("Error", scan_result['error'])]
+/* Expanders and Containers */
+.stExpander,
+.chart-container {
+  background: radial-gradient(circle, #2a3b4d 0%, #1e1e1e 100%);
+  border: 1px solid #00ffc880;
+  border-radius: 10px;
+  padding: 14px;
+  margin-top: 16px;
+  box-shadow: 0 0 15px rgba(0,255,200,0.1);
+}
 
-                    with st.expander("SSL/TLS Certificate"):
-                        if ssl_result.get("valid"):
-                            st.write(f"Issuer: {ssl_result['issuer']}\nSubject: {ssl_result['subject']}\nExpiry: {ssl_result['expiry']}")
-                            if ssl_result.get("expired"):
-                                st.warning("Certificate has expired!")
-                            if not ssl_result.get("hostname_match"):
-                                st.warning(f"Hostname mismatch: Certificate is valid for {ssl_result['cert_hostnames']}")
-                        else:
-                            st.error(f"SSL error: {ssl_result.get('error')}")
-                            analysis_result["ssl"] = [("Error", ssl_result.get('error'))]
+/* Tables */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 12px;
+  border-radius: 8px;
+  overflow: hidden;
+}
 
-                    with st.expander("DNS Analysis"):
-                        dns_result = dns_analysis(domain)
-                        if "error" not in dns_result:
-                            st.write(f"MX: {dns_result.get('MX', [])}\nTXT: {dns_result.get('TXT', [])}")
-                            analysis_result["dns"] = dns_result
-                        else:
-                            st.error(f"DNS error: {dns_result['error']}")
-                            analysis_result["dns"] = [("Error", dns_result['error'])]
+th {
+  background-color: #1f2739;
+  color: #00ffc8;
+  padding: 12px;
+  text-align: left;
+}
 
-                    with st.expander("Subdomains"):
-                        subdomains = subdomain_enumeration(domain)
-                        if subdomains:
-                            st.write(", ".join(subdomains))
-                            analysis_result["subdomains"] = subdomains
-                        else:
-                            st.write("No subdomains found")
-                            analysis_result["subdomains"] = [("Warning", "No subdomains found")]
+td {
+  background-color: #2a3b4d;
+  color: #e0e8f0;
+  padding: 12px;
+  border-bottom: 1px solid #444;
+}
 
-                    st.session_state.analysis_results.append(analysis_result)
+/* Alert Sections */
+.alert-success {
+  background-color: #163d2d;
+  color: #3ddc97;
+  padding: 12px;
+  border-radius: 6px;
+  box-shadow: 0 0 10px #3ddc97aa;
+}
 
-                except Exception as e:
-                    logger.error(f"Domain analysis error for {domain}: {str(e)}")
-                    st.error(f"Error analyzing {domain}: {str(e)}")
-                    analysis_result["prediction"] = f"Error: {str(e)}"
-                    st.session_state.analysis_results.append(analysis_result)
+.alert-warning {
+  background-color: #3b2e1d;
+  color: #ffd369;
+  padding: 12px;
+  border-radius: 6px;
+  box-shadow: 0 0 10px #ffd369aa;
+}
 
-elif st.session_state.mode == "Live Capture":
-    st.header("Live Traffic Capture")
-    interfaces = get_available_interfaces()
-    interface = st.selectbox("Select Network Interface", interfaces, index=0)
-    duration = st.slider("Capture Duration (seconds)", min_value=10, max_value=300, value=30)
-    if st.button("Start Capture"):
-        with st.spinner(f"Capturing traffic on {interface} for {duration} seconds..."):
-            if not check_java_version():
-                st.error(f"Java JDK 21 required at {JAVA_HOME}. Please install or configure correctly.")
-                st.stop()
-            try:
-                pcap_path = os.path.join(log_dir, f"capture_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pcap")
-                capture_traffic(interface, duration, pcap_path)
-                st.session_state.analysis_results = process_live_capture(pcap_path)
-                st.success(f"Capture completed! Saved to {pcap_path}")
-            except Exception as e:
-                logger.error(f"Live capture error: {str(e)}")
-                st.error(f"Error during live capture: {str(e)}")
+.alert-danger {
+  background-color: #421c1c;
+  color: #ff6b6b;
+  padding: 12px;
+  border-radius: 6px;
+  box-shadow: 0 0 10px #ff6b6baa;
+}
 
-elif st.session_state.mode == "Threat Map":
-    st.header("Threat Map")
-    domain = st.text_input("Enter domain to add to map (e.g., google.com)", "")
-    if st.button("Add Domain to Map"):
-        if domain:
-            with st.spinner("Analyzing domain for map..."):
-                analyze_domain_for_map(domain)
-    render_threat_map()
+/* Transitions for smooth interactivity */
+button, input, textarea, select {
+  transition: all 0.3s ease;
+}
 
-st.header("Recent Threats")
-if st.session_state.recent_threats:
-    recent_threats_df = pd.DataFrame(
-        st.session_state.recent_threats,
-        columns=["Timestamp", "Domain", "Threat", "Score"]
+</style>
+    """, unsafe_allow_html=True)
+    logger.debug("Title and CSS styles rendered successfully.")
+
+    mode = st.sidebar.selectbox(
+        "Select Mode",
+        ["Threat Map", "Live Capture", "Upload PCAP", "Domain Analysis"],
+        index=["Threat Map", "Live Capture", "Upload PCAP", "Domain Analysis"].index(st.session_state.mode)
     )
-    st.table(recent_threats_df)
-else:
-    st.write("No recent threats detected.")
+    st.session_state.mode = mode
+    logger.debug(f"Mode set to: {mode}")
 
-st.header("Analysis Results")
-if st.session_state.analysis_results:
-    for result in st.session_state.analysis_results:
-        st.subheader(f"Summary for {result['domain']}")
-        st.write(f"IP: {result['ip']}")
-        st.write(f"Prediction: {result.get('prediction', 'N/A')}")
-        st.write(f"Threat Score: {result.get('threat_score', 'N/A')}/100")
-        st.write(f"VirusTotal: {result.get('virustotal', 'N/A')}")
-        st.write(f"Security Audit: {result.get('security_audit', 'N/A')}")
-else:
-    st.write("No analysis results yet. Analyze a domain or capture traffic to see results.")
+    st.sidebar.header("Threat Summary")
+    st.sidebar.write(f"Total VirusTotal Alerts: {st.session_state.vt_alerts}")
+    for threat, count in st.session_state.threat_counts.items():
+        st.sidebar.write(f"{threat.capitalize()}: {count}")
+    logger.debug("Sidebar rendered successfully.")
 
-st.header("Application Logs")
-logs = read_last_n_lines(log_file)
-st.text_area("Logs", value="".join(logs), height=200)
+    if mode == "Upload PCAP":
+        st.header("Upload PCAP")
+        pcap_file = st.file_uploader("Upload PCAP file", type=["pcap", "pcapng"])
+        if st.button("Analyze File"):
+            if pcap_file is not None:
+                st.session_state.analysis_results = process_uploaded_files(pcap_file)
+                st.success("Analysis completed!")
+            else:
+                st.warning("Please upload a PCAP file to analyze.")
 
-st.header("Export Analysis")
-if st.session_state.analysis_results:
-    if st.button("Export to PDF"):
-        pdf_buffer = io.BytesIO()
-        doc = SimpleDocTemplate(pdf_buffer, pagesize=letter)
-        styles = getSampleStyleSheet()
-        story = []
+    elif mode == "Live Capture":
+        st.header("Live Traffic Capture")
+        interfaces = get_available_interfaces()
+        interface = st.selectbox("Select Network Interface", interfaces)
+        duration = st.slider("Capture Duration (seconds)", min_value=5, max_value=60, value=10)
+        if st.button("Start Capture"):
+            st.session_state.analysis_results = process_live_capture(interface, duration)
+            st.success("Live capture analysis completed!")
 
-        story.append(Paragraph("Cybersecurity Analysis Report", styles['Title']))
-        story.append(Spacer(1, 12))
+    elif mode == "Domain Analysis":
+        st.header("Domain Analysis")
+        domain = st.text_input("Enter Domain (e.g., example.com)")
+        if st.button("Analyze Domain"):
+            st.session_state.analysis_results = process_domain_analysis(domain)
+            if st.session_state.analysis_results:
+                st.success("Domain analysis completed!")
 
-        for result in st.session_state.analysis_results:
-            story.append(Paragraph(f"Domain: {result['domain']}", styles['Heading2']))
-            story.append(Paragraph(f"IP: {result['ip']}", styles['Normal']))
-            story.append(Paragraph(f"Prediction: {result.get('prediction', 'N/A')}", styles['Normal']))
-            story.append(Paragraph(f"Threat Score: {result.get('threat_score', 'N/A')}/100", styles['Normal']))
-            story.append(Paragraph(f"VirusTotal: {result.get('virustotal', 'N/A')}", styles['Normal']))
-            story.append(Paragraph(f"Security Audit: {result.get('security_audit', 'N/A')}", styles['Normal']))
+    elif mode == "Threat Map":
+        st.header("Threat Map")
+        domain = st.text_input("Add Domain to Map (e.g., example.com)")
+        if st.button("Add to Map"):
+            st.session_state.threat_locations = analyze_domain_for_map(domain)
+            st.success(f"Added {domain} to the threat map!")
+        render_threat_map()
 
-            if "whois" in result:
-                story.append(Paragraph("WHOIS Lookup", styles['Heading3']))
-                whois_data = [[k, v] for k, v in result["whois"]]
-                t = Table(whois_data)
-                t.setStyle(TableStyle([
-                    ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, 0), 14),
-                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-                    ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-                    ('GRID', (0, 0), (-1, -1), 1, colors.black)
-                ]))
-                story.append(t)
-            story.append(Spacer(1, 12))
+    with st.sidebar:
+        st.header("Recent Threats")
+        if st.session_state.recent_threats:
+            threats_df = pd.DataFrame(st.session_state.recent_threats, columns=["Timestamp", "Domain", "Threat", "Score"])
+            st.table(threats_df)
+        else:
+            st.write("No recent threats detected.")
 
-        doc.build(story)
-        pdf_buffer.seek(0)
-        st.download_button(
-            label="Download PDF Report",
-            data=pdf_buffer,
-            file_name="cybersecurity_report.pdf",
-            mime="application/pdf"
-        )
-else:
-    st.write("No analysis results to export.")
+        st.header("Logs")
+        log_lines = read_last_n_lines(log_file, n=50)
+        with st.expander("View Logs", expanded=False):
+            st.text_area("Logs", "\n".join(log_lines), height=300)
 
+if __name__ == "__main__":
+    main()
