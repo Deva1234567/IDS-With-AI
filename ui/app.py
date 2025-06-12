@@ -1,12 +1,11 @@
 
-import sys
 import os
+import sys
 
-# Allow import from parent directory
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from scripts.utils import parallel_domain_analysis
-
+# Ensure the project root is in the Python path (works on Render & locally)
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 import logging
 from logging.handlers import RotatingFileHandler
@@ -33,22 +32,20 @@ import nmap
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-
-
-
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-sys.path.append(project_root)
-
+# Setup logging
 logger = logging.getLogger("streamlit_app")
 logger.setLevel(logging.DEBUG)
-log_dir = r"C:\Users\devan\Desktop\Project\IDS project\logs"
+
+# Use a safe logging directory (relative or configurable)
+log_dir = os.path.join(project_root, "logs")
 os.makedirs(log_dir, exist_ok=True)
 log_file = os.path.join(log_dir, "streamlit.log")
 handler = RotatingFileHandler(log_file, maxBytes=1_000_000, backupCount=5)
 handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
 logger.addHandler(handler)
-logger.info("App started on VS Code in Windows with JDK 21")
+logger.info("App started")
 
+# Streamlit setup
 st.set_page_config(
     page_title="NetSec AI",
     page_icon="🛡️",
@@ -56,16 +53,32 @@ st.set_page_config(
     initial_sidebar_state="auto"
 )
 
+# Safe import of custom modules
 try:
     from scripts.config import VIRUSTOTAL_API_KEY, THREAT_INTEL_IPS, EMAIL_CONFIG
-    from scripts.utils import parallel_domain_analysis, capture_and_analyze_packets, analyze_packets, check_flaws
+    from scripts.utils import (
+        parallel_domain_analysis,
+        capture_and_analyze_packets,
+        analyze_packets,
+        check_flaws
+    )
     from scripts.predict import predict_threat
 except ImportError as e:
     logger.error(f"Failed to import scripts modules: {str(e)}")
     st.error(f"Failed to import scripts modules: {str(e)}. Ensure 'scripts' directory exists with config.py, predict.py, and utils.py.")
     st.stop()
 
-GEOIP_DB_PATH = r"C:\Users\devan\Desktop\Project\IDS project\data\GeoLite2-Country.mmdb"
+# Example constant
+GEOIP_DB_PATH = os.path.join(project_root, "data", "GeoLite2-Country.mmdb")
+
+# The rest of your Streamlit UI code goes here...
+# Example:
+st.title("🛡️ Network Security Dashboard - NetSec AI")
+
+st.write("Welcome to the intelligent intrusion detection dashboard.")
+
+# [Add your sections for domain analysis, packet capture, predictions, charts, etc.]
+
 
 MITRE_ATTACK_MAPPING = {
     "DDoS": {"technique": "T1498", "tactic": "Impact", "name": "Network Denial of Service"},
