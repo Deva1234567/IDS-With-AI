@@ -1,11 +1,15 @@
-
-import os
+import importlib.util
 import sys
+import os
 
-# Ensure the project root is in the Python path (works on Render & locally)
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+utils_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../scripts/utils.py"))
+spec = importlib.util.spec_from_file_location("utils", utils_path)
+utils = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(utils)
+
+parallel_domain_analysis = utils.parallel_domain_analysis
+
+
 
 import logging
 from logging.handlers import RotatingFileHandler
@@ -57,7 +61,6 @@ st.set_page_config(
 try:
     from scripts.config import VIRUSTOTAL_API_KEY, THREAT_INTEL_IPS, EMAIL_CONFIG
     from scripts.utils import (
-        parallel_domain_analysis,
         capture_and_analyze_packets,
         analyze_packets,
         check_flaws
