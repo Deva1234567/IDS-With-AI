@@ -1,3 +1,4 @@
+
 import importlib.util
 import sys
 import os
@@ -164,15 +165,19 @@ def get_country_from_ip(ip):
         logger.error(f"Unexpected geolocation error for {ip}: {str(e)}")
         st.error(f"Unexpected geolocation error: {str(e)}")
         return "Unknown"
-
 def resolve_ip_to_domain(ip):
     try:
-        domain, _, _ = socket.gethostbyaddr(ip)
+        result = socket.gethostbyaddr(ip)
+        domain = result[0]  # The primary domain name
         logger.debug(f"Resolved IP {ip} to domain {domain}")
         return domain
     except socket.herror:
         logger.warning(f"Could not resolve IP {ip} to domain")
         return None
+    except Exception as e:
+        logger.error(f"Unexpected error resolving domain for IP {ip}: {str(e)}")
+        return None
+
 
 def nmap_scan(ip):
     try:
