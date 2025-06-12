@@ -1,130 +1,210 @@
+# scripts/utils.py
 import logging
-import os
-import pandas as pd
-import whois
-import nmap
-import scapy.all as scapy
-import requests
 import socket
-from scripts.config import VIRUSTOTAL_API_KEY, THREAT_INTEL_IPS
+import ssl
+import OpenSSL
+import datetime
+from concurrent.futures import ThreadPoolExecutor
+from scapy.all import IP, TCP, UDP, Raw
+import requests
+import importlib
 
-# Setup logging
-log_dir = r"C:\Users\devan\Desktop\Project\IDS project\logs"
-os.makedirs(log_dir, exist_ok=True)
-log_file = os.path.join(log_dir, "utils.log")
-logging.basicConfig(
-    filename=log_file,
-    level=logging.DEBUG,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger("utils")
-logger.info("utils.py logging initialized")
+
+logger = logging.getLogger(__name__)
+
+# Import API keys from config
+try:
+    from .config import VIRUSTOTAL_API_KEY
+except ImportError as e:
+    logger.error(f"Failed to import API keys from config: {str(e)}")
+    VIRUSTOTAL_API_KEY = "your_virustotal_api_key_here"  # Fallback
+
+def ssl_check(domain):
+    """
+    Check the SSL certificate of a domain for expiration and hostname match.
+    Returns a dictionary with SSL details or an error.
+    """
+    try:
+        context = ssl.create_default_context()
+        context.check_hostname = False  # Temporarily disable hostname verification
+        context.verify_mode = ssl.CERT_REQUIRED
+        context.options |= ssl.OP_NO_TLSv1 | ssl.OP_NO_TLSv1_1  # Force TLS 1.2 or higher
+        with socket.create_connection((domain, 443), timeout=5) as sock:
+            with context.wrap_socket(sock, server_hostname=domain) as ssock:
+                cert = ssock.getpeercert(binary_form=True)
+        cert_x509 = OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_ASN1, cert)
+        not_after = datetime.datetime.strptime(cert_x509.get_notAfter().decode(), '%Y%m%d%H%M%SZ')
+        expired = not_after < datetime.datetime.utcnow()
+        # Extract subjectAltName
+        san = []
+        for i in range(cert_x509.get_extension_count()):
+            ext = cert_x509.get_extension(i)
+            if ext.get_short_name() == b'subjectAltName':
+                san.extend([s.strip() for s in str(ext).split(',') if s.strip().startswith('DNS:')])
+        hostname_match = domain.lower() in [s.replace('DNS:', '').lower() for s in san]
+        return {
+            "expired": expired,
+            "not_after": not_after.strftime('%Y-%m-%d %H:%M:%S'),
+            "hostname_match": hostname_match,
+            "subject_alt_names": [s.replace('DNS:', '') for s in san]
+        }
+    except ssl.SSLError as e:
+        logger.error(f"SSL check failed for {domain}: {str(e)}")
+        return {"error": f"SSL check failed: {str(e)}"}
+    except Exception as e:
+        logger.error(f"SSL check failed for {domain}: {str(e)}")
+        return {"error": f"SSL check failed: {str(e)}"}
+
+def virustotal_lookup(domain, api_key):
+    """
+    Perform a VirusTotal lookup for the domain.
+    Returns a string indicating threat detection status or an error message.
+    """
+    try:
+        if not api_key or api_key == "your_virustotal_api_key_here":
+            return "VirusTotal API key not configured. Please set VIRUSTOTAL_API_KEY in config.py."
+        headers = {"x-apikey": api_key}
+        response = requests.get(f"https://www.virustotal.com/api/v3/domains/{domain}", headers=headers)
+        response.raise_for_status()
+        data = response.json()
+        stats = data['data']['attributes']['last_analysis_stats']
+        if stats['malicious'] > 0 or stats['suspicious'] > 0:
+            return "Threats detected"
+        return "No threats detected"
+    except Exception as e:
+        logger.error(f"VirusTotal lookup failed for {domain}: {str(e)}")
+        return f"VirusTotal lookup failed: {str(e)}"
+
 
 def whois_lookup(domain):
-    """Perform WHOIS lookup for a domain."""
     try:
-        logger.debug(f"Attempting WHOIS lookup for {domain}")
+        whois = importlib.import_module("whois")
         w = whois.whois(domain)
-        result = {
-            "domain_name": w.get("domain_name", "N/A"),
-            "registrar": w.get("registrar", "N/A"),
-            "creation_date": str(w.get("creation_date", "N/A")),
-            "expiration_date": str(w.get("expiration_date", "N/A")),
-            "name_servers": ", ".join(w.get("name_servers", ["N/A"]))
-        }
-        logger.debug(f"WHOIS lookup successful for {domain}: {result}")
-        return result
+        if w:
+            return {
+                "domain_name": w.get("domain_name", "N/A"),
+                "registrar": w.get("registrar", "N/A"),
+                "creation_date": str(w.get("creation_date", "N/A")),
+                "expiration_date": str(w.get("expiration_date", "N/A")),
+                "name_servers": w.get("name_servers", "N/A")
+            }
+        else:
+            return {"error": "No WHOIS data available"}
     except Exception as e:
         logger.error(f"WHOIS lookup failed for {domain}: {str(e)}")
-        return {"error": str(e)}
+        return {"error": f"WHOIS lookup failed: {str(e)}"}
+    
+    
+    
+def parallel_domain_analysis(domain):
+    """
+    Perform parallel analysis on a domain (SSL, VirusTotal, WHOIS).
+    Returns a dictionary with results from all analyses.
+    """
+    with ThreadPoolExecutor() as executor:
+        futures = {
+            "SSL": executor.submit(ssl_check, domain),
+            "VirusTotal": executor.submit(virustotal_lookup, domain, VIRUSTOTAL_API_KEY),
+            "WHOIS": executor.submit(whois_lookup, domain)
+        }
+        results = {key: future.result() for key, future in futures.items()}
+    return results
 
-def nmap_scan(ip):
-    """Perform Nmap scan on an IP."""
+def analyze_packets(packets):
+    """
+    Analyze captured packets for suspicious activity.
+    Returns a dictionary with analysis results or an error.
+    """
     try:
-        logger.debug(f"Starting Nmap scan on {ip}")
-        nm = nmap.PortScanner()
-        nm.scan(ip, arguments="-sS -p 1-1000")
-        ports = []
-        for host in nm.all_hosts():
-            for proto in nm[host].all_protocols():
-                for port in nm[host][proto].keys():
-                    ports.append({"port": port, "state": nm[host][proto][port]["state"]})
-        result = {"ports": ports}
-        logger.debug(f"Nmap scan completed for {ip}: {result}")
-        return result
-    except Exception as e:
-        logger.error(f"Nmap scan failed for {ip}: {str(e)}")
-        return {"error": str(e)}
+        protocol_distribution = {"TCP": 0, "UDP": 0, "Other": 0}
+        traffic_direction = {"inbound": 0, "outbound": 0}
+        packet_sizes = []
+        connection_states = {"SYN": 0, "ACK": 0, "FIN": 0, "RST": 0}
+        top_talkers = {"sources": {}, "destinations": {}}
+        port_usage = {"source_ports": {}, "dest_ports": {}}
+        suspicious = False
+        details = []
+        payload_suspicion = []
 
-def capture_traffic(interface, count):
-    """Capture network traffic on specified interface."""
-    try:
-        logger.debug(f"Capturing {count} packets on interface {interface}")
-        packets = scapy.sniff(iface=interface, count=count, timeout=10)
-        data = []
         for pkt in packets:
-            if scapy.IP in pkt:
-                data.append({
-                    "src_ip": pkt[scapy.IP].src,
-                    "dst_ip": pkt[scapy.IP].dst,
-                    "protocol": pkt[scapy.IP].proto
-                })
-        df = pd.DataFrame(data)
-        logger.debug(f"Captured {len(df)} packets on {interface}")
-        return df
-    except Exception as e:
-        logger.error(f"Traffic capture failed on {interface}: {str(e)}")
-        return pd.DataFrame()
+            if IP in pkt:
+                src_ip = pkt[IP].src
+                dst_ip = pkt[IP].dst
+                packet_sizes.append(len(pkt))
 
-def virustotal_lookup(domain):
-    """Check domain reputation on VirusTotal."""
-    try:
-        logger.debug(f"Performing VirusTotal lookup for {domain}")
-        url = f"https://www.virustotal.com/vtapi/v2/domain/report?apikey={VIRUSTOTAL_API_KEY}&domain={domain}"
-        response = requests.get(url, timeout=15)
-        response.raise_for_status()
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("response_code") == 1:
-                positives = data.get("detected_urls", [])
-                if positives:
-                    result = f"Threats detected: {len(positives)} malicious URLs"
+                top_talkers["sources"][src_ip] = top_talkers["sources"].get(src_ip, 0) + 1
+                top_talkers["destinations"][dst_ip] = top_talkers["destinations"].get(dst_ip, 0) + 1
+
+                if TCP in pkt:
+                    protocol_distribution["TCP"] += 1
+                    src_port = pkt[TCP].sport
+                    dst_port = pkt[TCP].dport
+                    port_usage["source_ports"][src_port] = port_usage["source_ports"].get(src_port, 0) + 1
+                    port_usage["dest_ports"][dst_port] = port_usage["dest_ports"].get(dst_port, 0) + 1
+                    flags = pkt[TCP].flags
+                    if flags & 0x02: connection_states["SYN"] += 1
+                    if flags & 0x10: connection_states["ACK"] += 1
+                    if flags & 0x01: connection_states["FIN"] += 1
+                    if flags & 0x04: connection_states["RST"] += 1
+                elif UDP in pkt:
+                    protocol_distribution["UDP"] += 1
+                    src_port = pkt[UDP].sport
+                    dst_port = pkt[UDP].dport
+                    port_usage["source_ports"][src_port] = port_usage["source_ports"].get(src_port, 0) + 1
+                    port_usage["dest_ports"][dst_port] = port_usage["dest_ports"].get(dst_port, 0) + 1
                 else:
-                    result = "No threats detected"
-                logger.debug(f"VirusTotal lookup successful for {domain}: {result}")
-                return result
-        logger.warning(f"VirusTotal lookup failed for {domain}: Invalid response code")
-        return "VirusTotal lookup failed"
-    except requests.exceptions.RequestException as e:
-        logger.error(f"VirusTotal request failed for {domain}: {str(e)}")
-        return f"VirusTotal error: {str(e)}"
+                    protocol_distribution["Other"] += 1
+
+                if Raw in pkt:
+                    payload = str(pkt[Raw].load)
+                    if "sqlmap" in payload.lower():
+                        suspicious = True
+                        payload_suspicion.append("SQLmap signature detected")
+                    if "malware" in payload.lower():
+                        suspicious = True
+                        payload_suspicion.append("Malware signature detected")
+
+        return {
+            "suspicious": suspicious,
+            "details": details,
+            "payload_suspicion": payload_suspicion,
+            "protocol_distribution": protocol_distribution,
+            "traffic_direction": traffic_direction,
+            "packet_sizes": packet_sizes,
+            "connection_states": connection_states,
+            "top_talkers": top_talkers,
+            "port_usage": port_usage
+        }
     except Exception as e:
-        logger.error(f"VirusTotal unexpected error for {domain}: {str(e)}")
-        return f"VirusTotal error: {str(e)}"
+        logger.error(f"Packet analysis failed: {str(e)}")
+        return {"error": f"Packet analysis failed: {str(e)}"}
+
+def capture_and_analyze_packets(duration=10, interface=None):
+    """
+    Capture packets for a specified duration and analyze them.
+    Returns the analysis results or an error.
+    """
+    from scapy.all import sniff
+    try:
+        packets = sniff(timeout=duration, iface=interface)
+        return analyze_packets(packets)
+    except Exception as e:
+        logger.error(f"Packet capture failed: {str(e)}")
+        return {"error": f"Packet capture failed: {str(e)}"}
 
 def check_flaws(domain):
-    """Check for common security flaws."""
+    """
+    Check for potential security flaws in the domain's HTTP response.
+    Returns a list of flaws or an error message.
+    """
     try:
-        logger.debug(f"Checking security flaws for {domain}")
         flaws = []
-        target_ip = socket.gethostbyname(domain)
-        logger.debug(f"Resolved {domain} to IP: {target_ip}")
-        for threat_ip in THREAT_INTEL_IPS:
-            try:
-                resolved_ip = socket.gethostbyname(threat_ip)
-                if resolved_ip == target_ip:
-                    flaws.append(f"Match with known threat IP: {threat_ip}")
-                    logger.debug(f"Found match with threat IP {threat_ip} for {domain}")
-            except socket.gaierror:
-                logger.debug(f"Could not resolve threat IP {threat_ip}, skipping")
-                continue
-        if not flaws:
-            flaws.append("No major flaws detected")
-            logger.debug(f"No security flaws detected for {domain}")
-        return flaws
-    except socket.gaierror as e:
-        logger.error(f"Failed to resolve domain {domain}: {str(e)}")
-        return [f"Domain resolution error: {str(e)}"]
+        response = requests.get(f"http://{domain}", timeout=5)
+        if "xss" in response.text.lower():
+            flaws.append("Potential XSS vulnerability")
+        if "sql" in response.text.lower():
+            flaws.append("Potential SQL injection vulnerability")
+        return flaws if flaws else ["No major flaws detected"]
     except Exception as e:
-        logger.error(f"Security audit failed for {domain}: {str(e)}")
-        return [f"Security audit error: {str(e)}"]
+        logger.error(f"Flaw check failed for {domain}: {str(e)}")
+        return ["Flaw check failed"]
