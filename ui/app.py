@@ -13,6 +13,13 @@ utils = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(utils)
 
 parallel_domain_analysis = utils.parallel_domain_analysis
+if hasattr(utils, "parallel_domain_analysis"):
+    parallel_domain_analysis = utils.parallel_domain_analysis
+else:
+    logger.error("utils module missing 'parallel_domain_analysis'")
+    st.error("Missing 'parallel_domain_analysis' function in utils.py.")
+    st.stop()
+
 
 
 
