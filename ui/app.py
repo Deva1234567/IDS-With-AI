@@ -2,6 +2,11 @@ import importlib.util
 import sys
 import os
 
+# Define project root (parent of 'ui' folder)
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.append(project_root)
+
+
 utils_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../scripts/utils.py"))
 spec = importlib.util.spec_from_file_location("utils", utils_path)
 utils = importlib.util.module_from_spec(spec)
@@ -41,7 +46,8 @@ logger = logging.getLogger("streamlit_app")
 logger.setLevel(logging.DEBUG)
 
 # Use a safe logging directory (relative or configurable)
-log_dir = os.path.join(project_root, "logs")
+log_dir = os.path.join(os.path.dirname(__file__), "logs")
+
 os.makedirs(log_dir, exist_ok=True)
 log_file = os.path.join(log_dir, "streamlit.log")
 handler = RotatingFileHandler(log_file, maxBytes=1_000_000, backupCount=5)
@@ -76,10 +82,6 @@ GEOIP_DB_PATH = os.path.join(project_root, "data", "GeoLite2-Country.mmdb")
 
 # The rest of your Streamlit UI code goes here...
 # Example:
-st.title("🛡️ Network Security Dashboard - NetSec AI")
-
-st.write("Welcome to the intelligent intrusion detection dashboard.")
-
 # [Add your sections for domain analysis, packet capture, predictions, charts, etc.]
 
 
