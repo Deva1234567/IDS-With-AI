@@ -1,5 +1,13 @@
+
 import sys
 import os
+
+# Allow import from parent directory
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from scripts.utils import parallel_domain_analysis
+
+
 import logging
 from logging.handlers import RotatingFileHandler
 import streamlit as st
@@ -24,13 +32,6 @@ from scapy.all import sniff, wrpcap, rdpcap, get_working_ifaces, IP, Raw
 import nmap
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import sys
-import os
-
-# Allow import from parent directory
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from scripts.utils import parallel_domain_analysis
 
 
 
