@@ -17,7 +17,7 @@ try:
     from .config import VIRUSTOTAL_API_KEY
 except ImportError as e:
     logger.error(f"Failed to import API keys from config: {str(e)}")
-    VIRUSTOTAL_API_KEY = "your_virustotal_api_key_here"  # Fallback
+    VIRUSTOTAL_API_KEY = "f8f5f1819ee8339d9b33cf5832990357cd9832ceea1a68f8ee048eff6a640a0e"  # Fallback
 
 def ssl_check(domain):
     """
@@ -55,25 +55,29 @@ def ssl_check(domain):
         logger.error(f"SSL check failed for {domain}: {str(e)}")
         return {"error": f"SSL check failed: {str(e)}"}
 
-def virustotal_lookup(domain, api_key):
-    """
-    Perform a VirusTotal lookup for the domain.
-    Returns a string indicating threat detection status or an error message.
-    """
+def virustotal_lookup(domain, api_key=None):
+    """Check domain reputation on VirusTotal."""
+    if not api_key:
+        try:
+            from .config import VIRUSTOTAL_API_KEY
+            api_key = VIRUSTOTAL_API_KEY
+        except ImportError:
+            return "VirusTotal error: API key missing or config import failed"
+
     try:
-        if not api_key or api_key == "your_virustotal_api_key_here":
-            return "VirusTotal API key not configured. Please set VIRUSTOTAL_API_KEY in config.py."
-        headers = {"x-apikey": api_key}
-        response = requests.get(f"https://www.virustotal.com/api/v3/domains/{domain}", headers=headers)
+        url = f"https://www.virustotal.com/vtapi/v2/domain/report?apikey={api_key}&domain={domain}"
+        response = requests.get(url, timeout=15)
         response.raise_for_status()
         data = response.json()
-        stats = data['data']['attributes']['last_analysis_stats']
-        if stats['malicious'] > 0 or stats['suspicious'] > 0:
-            return "Threats detected"
-        return "No threats detected"
-    except Exception as e:
-        logger.error(f"VirusTotal lookup failed for {domain}: {str(e)}")
-        return f"VirusTotal lookup failed: {str(e)}"
+        if data.get("response_code") == 1:
+            positives = data.get("detected_urls", [])
+            if positives:
+                return f"Threats detected: {len(positives)} malicious URLs"
+            else:
+                return "No threats detected"
+        return "VirusTotal lookup failed: Invalid response"
+    except requests.exceptions.RequestException as e:
+        return f"VirusTotal error: {str(e)}"
 
 
 def whois_lookup(domain):
