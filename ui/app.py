@@ -1,4 +1,3 @@
-
 import importlib.util
 import sys
 import os
@@ -124,6 +123,23 @@ FALLBACK_COORDINATES = {
     "United States": (37.0902, -95.7129),
     "Unknown": (0, 0)
 }
+
+import platform
+
+def is_live_capture_supported():
+    # Assume no support when deployed
+    if platform.system() in ['Linux', 'Darwin', 'Windows']:
+        return os.getenv("IS_DEPLOYED") != "true"
+    return False
+
+if is_live_capture_supported():
+    st.sidebar.header("Live Traffic Capture")
+    # ... your live capture code ...
+else:
+    st.sidebar.warning("Live capture is disabled on this deployment. Please upload a PCAP file.")
+
+
+
 
 def get_mitre_mapping(threat):
     return MITRE_ATTACK_MAPPING.get(threat, {"technique": "N/A", "tactic": "N/A", "name": "Not Mapped"})
